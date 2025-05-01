@@ -1,0 +1,14 @@
+[package]
+name = "mac-rf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+defmt = "1.0"
+
+crc = "3.2"
+cobs = "0.3"
+embedded-io-async = "0.6"
+
+bitfield-struct = "0.10"
+endian-num = { version = "0.2", features = ["linux-types"] }
