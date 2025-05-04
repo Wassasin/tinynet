@@ -12,3 +12,12 @@ embedded-io-async = "0.6"
 
 bitfield-struct = "0.10"
 endian-num = { version = "0.2", features = ["linux-types"] }
+
+[dev-dependencies]
+embassy-sync = "0.6.2"
+embassy-futures = "0.1.1"
+
+async-std = { version = "1.13", features = ["attributes"] }
+
+log = "0.4"
+pretty_env_logger = "0.5.0"

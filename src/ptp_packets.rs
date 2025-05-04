@@ -55,6 +55,7 @@ impl Header {
     }
 }
 
+#[derive(Debug)]
 pub enum Error<E> {
     /// Underlying buffer to store packet in is too small.
     BufferTooSmall,
@@ -91,14 +92,18 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         let crc = digest.finalize();
 
         let mut buf = [0u8; MTU];
-        let mut encoder = cobs::CobsEncoder::new(&mut buf);
-        encoder.push(&header)?;
-        encoder.push(data)?;
-        encoder.push(&crc.to_le_bytes())?;
-        let size = encoder.finalize();
+        buf[0] = MARKER;
+        let size = {
+            let mut encoder = cobs::CobsEncoder::new(&mut buf[1..]);
+            encoder.push(&header)?;
+            encoder.push(data)?;
+            encoder.push(&crc.to_le_bytes())?;
+            encoder.finalize()
+        };
+        buf[1 + size] = MARKER;
 
         self.inner
-            .write_all(&buf[0..size])
+            .write_all(&buf[0..size + 2])
             .await
             .map_err(Error::Inner)?;
 
@@ -106,18 +111,15 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
     }
 
     async fn send_empty_nack_request(&mut self) -> Result<(), Error<T::Error>> {
-        let mut buf = [0u8; cobs::max_encoding_length(EMPTY_HEADER_BYTES.len() + 2)];
-        let mut encoder = cobs::CobsEncoder::new(&mut buf);
-        encoder.push(&EMPTY_HEADER_BYTES)?;
-        encoder.push(&EMPTY_HEADER_CRC_BYTES)?;
-        let size = encoder.finalize();
-
-        self.inner
-            .write_all(&buf[0..size])
-            .await
-            .map_err(Error::Inner)?;
-
-        Ok(())
+        self.send(
+            Header::new()
+                .with_ack(false)
+                .with_allow_data(true)
+                .with_has_data(false)
+                .with_len(0),
+            &[],
+        )
+        .await
     }
 
     async fn receive(&mut self, data: &mut [u8]) -> Result<Header, Error<T::Error>> {
@@ -166,14 +168,18 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         }
 
         let (rx_header, rx_body) = rx_header_body.split_at(HEADER_LEN);
-        let rx_header =
-            Header::from_bits(le16::from_le_bytes(defmt::unwrap!(rx_header.try_into())));
+        let rx_header = if let Ok(rx_header) = rx_header.try_into() {
+            Header::from_bits(le16::from_le_bytes(rx_header))
+        } else {
+            // We just split on HEADER_LEN, so the conversion must succeed.
+            unreachable!();
+        };
 
         if rx_header.len() as usize != rx_body.len() {
             return Err(Error::Malformed);
         }
 
-        if rx_body.len() < data.len() {
+        if rx_body.len() > data.len() {
             return Err(Error::BufferTooSmall);
         }
 
@@ -282,13 +288,17 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                         return Ok(result);
                     }
 
-                    if !header.allow_data() {
-                        self.inner.send_empty_nack_request().await?;
-                        continue;
+                    if header.has_data() {
+                        result = Some(header.len() as usize);
                     }
 
                     // Send our data with an acknowledgement.
                     if let Some(tx_packet) = tx_packet {
+                        if !header.allow_data() {
+                            self.inner.send_empty_nack_request().await?;
+                            continue;
+                        }
+
                         self.inner
                             .send(
                                 Header::new()
@@ -300,7 +310,6 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                             .await?;
 
                         if header.has_data() {
-                            result = Some(header.len() as usize);
                             continue; // Receive ACK first.
                         } else {
                             return Ok(None);
@@ -315,7 +324,11 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                                 &[],
                             )
                             .await?;
-                        return Ok(None);
+                        if header.has_data() {
+                            return Ok(result);
+                        } else {
+                            return Ok(None);
+                        }
                     }
                 }
                 // Transmission related issues
