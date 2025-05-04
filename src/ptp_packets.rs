@@ -33,11 +33,10 @@ struct Transceiver<T: Read + Write, const MTU: usize> {
 pub trait PacketInterface {
     type Error;
 
-    async fn read(&mut self, rx_packet: &mut [u8]) -> Result<Option<usize>, Self::Error>;
     async fn transfer(
         &mut self,
         rx_packet: &mut [u8],
-        tx_packet: &[u8],
+        tx_packet: Option<&[u8]>,
     ) -> Result<Option<usize>, Self::Error>;
 }
 
@@ -211,56 +210,26 @@ impl<T: Read + Write, const MTU: usize> Slave<T, MTU> {
 impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
     type Error = Error<T::Error>;
 
-    async fn read(&mut self, rx_packet: &mut [u8]) -> Result<Option<usize>, Self::Error> {
-        loop {
-            // Write empty packet to elicit a transfer.
-            self.inner.send_empty_nack_request().await?;
-
-            match self.inner.receive(rx_packet).await {
-                Ok(header) => {
-                    if header.has_data() {
-                        self.inner
-                            .send(
-                                Header::new()
-                                    .with_ack(true)
-                                    .with_has_data(false)
-                                    .with_allow_data(false)
-                                    .with_len(0),
-                                &[],
-                            )
-                            .await?;
-
-                        return Ok(Some(header.len() as usize));
-                    } else {
-                        return Ok(None);
-                    }
-                }
-                // Transmission related issues
-                Err(Error::Checksum) | Err(Error::CobsEncoding) | Err(Error::MissingMarker) => {
-                    // TODO mark statistics
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
     async fn transfer(
         &mut self,
         rx_packet: &mut [u8],
-        tx_packet: &[u8],
+        tx_packet: Option<&[u8]>,
     ) -> Result<Option<usize>, Self::Error> {
         loop {
-            self.inner
-                .send(
-                    Header::new()
-                        .with_ack(false)
-                        .with_has_data(true)
-                        .with_allow_data(true)
-                        .with_len(tx_packet.len() as u16),
-                    tx_packet,
-                )
-                .await?;
+            if let Some(tx_packet) = tx_packet {
+                self.inner
+                    .send(
+                        Header::new()
+                            .with_ack(false)
+                            .with_has_data(true)
+                            .with_allow_data(true)
+                            .with_len(tx_packet.len() as u16),
+                        tx_packet,
+                    )
+                    .await?;
+            } else {
+                self.inner.send_empty_nack_request().await?;
+            }
 
             match self.inner.receive(rx_packet).await {
                 Ok(header) => {
@@ -299,45 +268,10 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
 impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
     type Error = Error<T::Error>;
 
-    async fn read(&mut self, rx_packet: &mut [u8]) -> Result<Option<usize>, Self::Error> {
-        loop {
-            match self.inner.receive(rx_packet).await {
-                Ok(header) => {
-                    // Send an acknowledgement.
-                    self.inner
-                        .send(
-                            Header::new()
-                                .with_ack(true)
-                                .with_has_data(false)
-                                .with_len(0),
-                            &[],
-                        )
-                        .await?;
-
-                    if header.has_data() {
-                        return Ok(Some(header.len() as usize));
-                    } else {
-                        return Ok(None);
-                    }
-                }
-                // Transmission related issues
-                Err(Error::Checksum) | Err(Error::CobsEncoding) | Err(Error::MissingMarker) => {
-                    // TODO mark statistics
-
-                    // Send a NACK, request retransmission.
-                    self.inner.send_empty_nack_request().await?;
-
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
     async fn transfer(
         &mut self,
         rx_packet: &mut [u8],
-        tx_packet: &[u8],
+        tx_packet: Option<&[u8]>,
     ) -> Result<Option<usize>, Self::Error> {
         let mut result = None;
 
@@ -354,20 +288,33 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                     }
 
                     // Send our data with an acknowledgement.
-                    self.inner
-                        .send(
-                            Header::new()
-                                .with_ack(true)
-                                .with_has_data(true)
-                                .with_len(tx_packet.len() as u16),
-                            tx_packet,
-                        )
-                        .await?;
+                    if let Some(tx_packet) = tx_packet {
+                        self.inner
+                            .send(
+                                Header::new()
+                                    .with_ack(true)
+                                    .with_has_data(true)
+                                    .with_len(tx_packet.len() as u16),
+                                tx_packet,
+                            )
+                            .await?;
 
-                    if header.has_data() {
-                        result = Some(header.len() as usize);
-                        continue; // Receive ACK first.
+                        if header.has_data() {
+                            result = Some(header.len() as usize);
+                            continue; // Receive ACK first.
+                        } else {
+                            return Ok(None);
+                        }
                     } else {
+                        self.inner
+                            .send(
+                                Header::new()
+                                    .with_ack(true)
+                                    .with_has_data(false)
+                                    .with_allow_data(true),
+                                &[],
+                            )
+                            .await?;
                         return Ok(None);
                     }
                 }
