@@ -2,17 +2,21 @@
 
 pub(crate) mod buf;
 
-// pub mod embedded_protocol;
+pub mod embedded_protocol;
 pub mod ptp_packets;
 
 #[macro_export]
 macro_rules! unwrap {
-    ($cond:expr) => {
+    ($cond:expr) => {{
         #[allow(unused)]
         let value = $cond;
         #[cfg(feature = "defmt")]
-        defmt::unwrap!(value);
-        #[cfg(feature = "log")]
-        value.unwrap();
-    };
+        {
+            defmt::unwrap!(value)
+        }
+        #[cfg(not(feature = "defmt"))]
+        {
+            value.unwrap()
+        }
+    }};
 }

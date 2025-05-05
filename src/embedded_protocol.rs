@@ -2,19 +2,137 @@
 //!
 //! Does not provide reliability.
 
-use bitfield_struct::bitfield;
-use endian_num::{le16, le32};
+use core::ops::BitOrAssign;
 
-#[bitfield(u16, repr = le16, from = le16::from_ne, into = le16::to_ne)]
-struct Address {
-    #[bits(12)]
-    inner: u16,
+use bitfields::bitfield;
+use scapegoat::SgMap;
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
+pub struct Address(u16);
+pub const ADDRESS_MULTICAST: Address = Address(0xFFF);
+
+#[derive(Debug)]
+pub struct AddressOutOfRange;
+
+impl TryFrom<u16> for Address {
+    type Error = AddressOutOfRange;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Address::try_from(value)
+    }
 }
 
-#[bitfield(u32, repr = le32, from = le32::from_ne, into = le32::to_ne)]
+impl Address {
+    const fn try_from(value: u16) -> Result<Self, AddressOutOfRange> {
+        if value < ADDRESS_MULTICAST.0 {
+            Ok(Address(value))
+        } else {
+            Err(AddressOutOfRange)
+        }
+    }
+
+    const fn from_bits(value: u16) -> Self {
+        match Address::try_from(value) {
+            Ok(value) => value,
+            Err(_) => panic!(),
+        }
+    }
+
+    const fn into_bits(self) -> u16 {
+        self.0
+    }
+}
+
+#[bitfield(u32)]
 struct Header {
+    protocol: u8,
     #[bits(12)]
-    src: u16,
+    src: Address,
     #[bits(12)]
-    dst: u16,
+    dst: Address,
+}
+
+pub struct PortId(u8);
+
+#[derive(Default, Clone, Copy)]
+pub struct PortSet(u8);
+
+impl From<PortId> for PortSet {
+    fn from(value: PortId) -> Self {
+        PortSet(1 << value.0)
+    }
+}
+
+impl BitOrAssign for PortSet {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0
+    }
+}
+
+impl PortSet {
+    pub const fn empty() -> Self {
+        PortSet(0)
+    }
+}
+
+impl IntoIterator for PortSet {
+    type Item = PortId;
+    type IntoIter = PortSetIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        PortSetIterator {
+            set: self.0,
+            index: 0,
+        }
+    }
+}
+
+pub struct PortSetIterator {
+    set: u8,
+    index: u8,
+}
+
+impl Iterator for PortSetIterator {
+    type Item = PortId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.set == 0u8 {
+            return None;
+        }
+
+        while self.set & 0b1 != 0b1 {
+            self.set >>= 1;
+            self.index += 1;
+        }
+
+        Some(PortId(self.index))
+    }
+}
+
+pub struct Router<const TABLE_SIZE: usize> {
+    table: SgMap<Address, PortSet, TABLE_SIZE>,
+}
+
+impl<const TABLE_SIZE: usize> Router<TABLE_SIZE> {
+    pub fn new() -> Self {
+        Self {
+            table: SgMap::new(),
+        }
+    }
+
+    pub fn add_route(&mut self, port: PortId, address: Address) {
+        let port = PortSet::from(port);
+        self.table
+            .entry(address)
+            .and_modify(|set| *set |= port)
+            .or_insert(port);
+    }
+
+    pub fn get_route(&self, address: Address) -> PortSet {
+        if let Some(set) = self.table.get(&address) {
+            *set
+        } else {
+            PortSet::empty()
+        }
+    }
 }

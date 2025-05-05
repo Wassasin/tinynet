@@ -9,9 +9,11 @@ log = { version = "0.4", optional = true }
 
 crc = "3.2"
 cobs = "0.3"
+bitfields = "0.13.2"
+
 embedded-io-async = "0.6"
 
-bitfields = "0.13.2"
+scapegoat = "2.3"
 
 [dev-dependencies]
 embassy-sync = "0.6.2"
