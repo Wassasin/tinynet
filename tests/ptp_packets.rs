@@ -80,7 +80,7 @@ async fn mock() {
 }
 
 #[async_std::test]
-async fn todo() {
+async fn rx_tx() {
     let mut bus = MockHalfDuplexBus::new();
     let (master, slave) = bus.split();
 

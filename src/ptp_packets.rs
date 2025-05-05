@@ -13,18 +13,10 @@ use crate::{buf::Buf, unwrap};
 const CRC_ALG: crc::Algorithm<u16> = crc::CRC_16_USB;
 const CRC: crc::Crc<u16> = crc::Crc::<u16>::new(&CRC_ALG);
 
-const HEADER_LEN: usize = 2;
-const CRC_LEN: usize = 2;
+const HEADER_LEN: usize = Header::new().to_bytes().len();
+const CRC_LEN: usize = CRC.checksum(&[0u8; 2]).to_le_bytes().len();
 
-const EMPTY_HEADER: Header = Header::new()
-    .with_ack(false)
-    .with_allow_data(true)
-    .with_has_data(false)
-    .with_len(0);
-const EMPTY_HEADER_BYTES: [u8; HEADER_LEN] = EMPTY_HEADER.to_bytes();
-const EMPTY_HEADER_CRC: u16 = CRC.checksum(&EMPTY_HEADER_BYTES);
-const EMPTY_HEADER_CRC_BYTES: [u8; CRC_LEN] = EMPTY_HEADER_CRC.to_le_bytes();
-
+/// Cobs sentinel value put at end of a frame.
 const MARKER: u8 = 0x00;
 
 struct Transceiver<T: Read + Write, const MTU: usize> {
@@ -44,7 +36,7 @@ pub trait PacketInterface {
 }
 
 #[bitfield(u16, repr = le16, from = le16::from_ne, into = le16::to_ne)]
-pub struct Header {
+struct Header {
     ack: bool,
     allow_data: bool,
     has_data: bool,
@@ -53,7 +45,7 @@ pub struct Header {
 }
 
 impl Header {
-    pub const fn to_bytes(&self) -> [u8; 2] {
+    pub const fn to_bytes(self) -> [u8; 2] {
         self.into_bits().to_le_bytes()
     }
 }
@@ -175,7 +167,7 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         let frame_len = loop {
             // To start off, check if we have a full frame already in our rx buffer.
             let marker = self.rx_buf.as_slice()[scanned_upto..]
-                .into_iter()
+                .iter()
                 .enumerate()
                 .find(|(_i, b)| **b == MARKER);
             scanned_upto = self.rx_buf.len();
@@ -193,7 +185,7 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
 
             let size = self
                 .inner
-                .read(&mut self.rx_buf.free_mut_slice())
+                .read(self.rx_buf.free_mut_slice())
                 .await
                 .map_err(Error::Inner)?;
 
@@ -289,7 +281,7 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
                     }
                 }
                 // Transmission related issues
-                Err(Error::Checksum) | Err(Error::CobsEncoding) => {
+                Err(Error::Checksum) | Err(Error::Malformed) | Err(Error::CobsEncoding) => {
                     // TODO mark statistics
                     continue;
                 }
@@ -356,7 +348,7 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                     }
                 }
                 // Transmission related issues
-                Err(Error::Checksum) | Err(Error::CobsEncoding) => {
+                Err(Error::Checksum) | Err(Error::Malformed) | Err(Error::CobsEncoding) => {
                     // TODO mark statistics
                     // Send a NACK, request retransmission.
                     self.inner.send_empty_nack_request().await?;

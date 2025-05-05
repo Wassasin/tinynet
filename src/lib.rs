@@ -2,6 +2,7 @@
 
 pub(crate) mod buf;
 
+pub mod embedded_protocol;
 pub mod ptp_packets;
 
 #[macro_export]

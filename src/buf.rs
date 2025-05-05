@@ -10,6 +10,7 @@ pub struct Buf<const N: usize> {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct OverflowError;
 
+#[allow(dead_code)]
 impl<const N: usize> Buf<N> {
     pub const fn new() -> Self {
         Self {
@@ -46,7 +47,7 @@ impl<const N: usize> Buf<N> {
         // &mut buffer[..self.len]
         unsafe {
             core::slice::from_raw_parts_mut(
-                (self.buffer.as_mut_ptr() as *mut u8).offset(self.len as isize),
+                self.buffer[self.len..].as_mut_ptr() as *mut u8,
                 N - self.len,
             )
         }
