@@ -1,5 +1,10 @@
 //! Discovery protocol for management of network addresses.
 
+use embassy_sync::{
+    blocking_mutex::raw::NoopRawMutex,
+    mutex::Mutex,
+    watch::{Receiver, Sender, Watch},
+};
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 
@@ -26,28 +31,71 @@ pub enum Packet {
     Assign(HardwareAddress, Address),
 }
 
+#[derive(Clone)]
 enum State {
     Unassigned,
     Assigned(Address),
 }
 
-pub struct Client<P: PacketPipe> {
+pub struct Client<P: PacketPipe, const N: usize> {
+    state: Mutex<NoopRawMutex, State>,
+    state_update: Watch<NoopRawMutex, (), N>,
+
+    pipe: P,
     protocol_id: u8,
     hardware_address: HardwareAddress,
-    state: State,
-    pipe: P,
 }
 
-impl<P: PacketPipe> Client<P> {
+struct ClientCore<'a, P: PacketPipe, const N: usize> {
+    state: &'a Mutex<NoopRawMutex, State>,
+    state_sender: Sender<'a, NoopRawMutex, (), N>,
+
+    pipe: &'a mut P,
+    protocol_id: u8,
+    hardware_address: &'a HardwareAddress,
+}
+
+pub struct ClientView<'a, const N: usize> {
+    state: &'a Mutex<NoopRawMutex, State>,
+    state_receiver: Receiver<'a, NoopRawMutex, (), N>,
+}
+
+impl<P: PacketPipe, const N: usize> Client<P, N> {
     pub fn new(pipe: P, protocol_id: u8, hardware_address: HardwareAddress) -> Self {
         Self {
+            state: Mutex::new(State::Unassigned),
+            state_update: Watch::new(),
+
             protocol_id,
             hardware_address,
-            state: State::Unassigned,
             pipe,
         }
     }
 
+    pub fn run(&mut self) -> (impl Future<Output = ()>, ClientView<'_, N>) {
+        let task = async {
+            let core = ClientCore {
+                state: &self.state,
+                state_sender: self.state_update.sender(),
+                pipe: &mut self.pipe,
+                protocol_id: self.protocol_id,
+                hardware_address: &self.hardware_address,
+            };
+
+            core.run()
+        };
+
+        (
+            task,
+            ClientView {
+                state: &self.state,
+                state_receiver: self.state_update.receiver(),
+            },
+        )
+    }
+}
+
+impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
     fn our_address(&self) -> Option<Address> {
         match self.state {
             State::Unassigned => None,
@@ -117,18 +165,28 @@ impl<P: PacketPipe> Client<P> {
         }
     }
 
-    pub async fn run(&mut self) -> ! {
-        let mut rx_body = [0u8; MTU];
-        loop {
-            match self.pipe.receive(&mut rx_body).await {
-                Ok((header, size)) => match postcard::from_bytes::<Packet>(&rx_body[..size]) {
-                    Ok(packet) => self.handle_packet(&header, &packet).await,
-                    Err(e) => {
-                        error!("Got malformed packet: {}", e);
-                    }
-                },
-                Err(e) => self.handle(Err(e)),
+    pub fn run(&mut self) -> (impl Future<Output = ()>, ClientView<'_, N>) {
+        let task = async {
+            let mut rx_body = [0u8; MTU];
+            loop {
+                match self.pipe.receive(&mut rx_body).await {
+                    Ok((header, size)) => match postcard::from_bytes::<Packet>(&rx_body[..size]) {
+                        Ok(packet) => self.handle_packet(&header, &packet).await,
+                        Err(e) => {
+                            error!("Got malformed packet: {}", e);
+                        }
+                    },
+                    Err(e) => self.handle(Err(e)),
+                }
             }
-        }
+        };
+
+        (
+            task,
+            ClientView {
+                state: &self.state,
+                state_sender: self.state_update.sender(),
+            },
+        )
     }
 }

@@ -59,78 +59,82 @@ impl MockHalfDuplexBus {
     }
 }
 
-#[async_std::test]
-async fn mock() {
-    let mut bus = MockHalfDuplexBus::new();
-    let (mut master, mut slave) = bus.split();
+#[test]
+fn mock() {
+    embassy_futures::block_on(async {
+        let mut bus = MockHalfDuplexBus::new();
+        let (mut master, mut slave) = bus.split();
 
-    let reference = core::array::from_fn::<u8, 128, _>(|i| i as u8);
-    master.write_all(&reference).await.unwrap();
+        let reference = core::array::from_fn::<u8, 128, _>(|i| i as u8);
+        master.write_all(&reference).await.unwrap();
 
-    let mut buf = [0u8; 256];
-    assert_eq!(slave.read(&mut buf).await, Ok(128));
-    assert_eq!(buf[0..reference.len()], reference);
+        let mut buf = [0u8; 256];
+        assert_eq!(slave.read(&mut buf).await, Ok(128));
+        assert_eq!(buf[0..reference.len()], reference);
 
-    let reference = core::array::from_fn::<u8, 128, _>(|i| i as u8 + 1);
-    slave.write_all(&reference).await.unwrap();
+        let reference = core::array::from_fn::<u8, 128, _>(|i| i as u8 + 1);
+        slave.write_all(&reference).await.unwrap();
 
-    let mut buf = [0u8; 256];
-    assert_eq!(master.read(&mut buf).await, Ok(128));
-    assert_eq!(buf[0..reference.len()], reference);
+        let mut buf = [0u8; 256];
+        assert_eq!(master.read(&mut buf).await, Ok(128));
+        assert_eq!(buf[0..reference.len()], reference);
+    });
 }
 
-#[async_std::test]
-async fn rx_tx() {
-    let mut bus = MockHalfDuplexBus::new();
-    let (master, slave) = bus.split();
+#[test]
+fn rx_tx() {
+    embassy_futures::block_on(async {
+        let mut bus = MockHalfDuplexBus::new();
+        let (master, slave) = bus.split();
 
-    let mut master: Master<_, 256> = Master::new(master);
-    let mut slave: Slave<_, 256> = Slave::new(slave);
+        let mut master: Master<_, 256> = Master::new(master);
+        let mut slave: Slave<_, 256> = Slave::new(slave);
 
-    let pkt = &[1, 2, 3, 4];
+        let pkt = &[1, 2, 3, 4];
 
-    let master_fut = async {
-        let mut buf = [0u8; 64];
+        let master_fut = async {
+            let mut buf = [0u8; 64];
 
-        // Master RX
-        let size = master.transfer(&mut buf, None).await.unwrap().unwrap();
-        assert_eq!(&buf[0..size], pkt);
+            // Master RX
+            let size = master.transfer(&mut buf, None).await.unwrap().unwrap();
+            assert_eq!(&buf[0..size], pkt);
 
-        // Master TX
-        let result = master.transfer(&mut buf, Some(pkt)).await.unwrap();
-        assert!(result.is_none());
-
-        // Master TX+RX
-        let size = master.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
-        assert_eq!(&buf[0..size], pkt);
-
-        for _ in 0..5 {
-            // Master RX empty
-            let result = master.transfer(&mut buf, None).await.unwrap();
+            // Master TX
+            let result = master.transfer(&mut buf, Some(pkt)).await.unwrap();
             assert!(result.is_none());
-        }
-    };
-    let slave_fut = async {
-        let mut buf = [0u8; 64];
 
-        // Slave TX
-        let result = slave.transfer(&mut buf, Some(pkt)).await.unwrap();
-        assert!(result.is_none());
+            // Master TX+RX
+            let size = master.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
+            assert_eq!(&buf[0..size], pkt);
 
-        // Slave RX
-        let size = slave.transfer(&mut buf, None).await.unwrap().unwrap();
-        assert_eq!(&buf[0..size], pkt);
+            for _ in 0..5 {
+                // Master RX empty
+                let result = master.transfer(&mut buf, None).await.unwrap();
+                assert!(result.is_none());
+            }
+        };
+        let slave_fut = async {
+            let mut buf = [0u8; 64];
 
-        // Slave TX+RX
-        let size = slave.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
-        assert_eq!(&buf[0..size], pkt);
-
-        for _ in 0..5 {
-            // Slave RX empty
-            let result = slave.transfer(&mut buf, None).await.unwrap();
+            // Slave TX
+            let result = slave.transfer(&mut buf, Some(pkt)).await.unwrap();
             assert!(result.is_none());
-        }
-    };
 
-    embassy_futures::join::join(master_fut, slave_fut).await;
+            // Slave RX
+            let size = slave.transfer(&mut buf, None).await.unwrap().unwrap();
+            assert_eq!(&buf[0..size], pkt);
+
+            // Slave TX+RX
+            let size = slave.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
+            assert_eq!(&buf[0..size], pkt);
+
+            for _ in 0..5 {
+                // Slave RX empty
+                let result = slave.transfer(&mut buf, None).await.unwrap();
+                assert!(result.is_none());
+            }
+        };
+
+        embassy_futures::join::join(master_fut, slave_fut).await;
+    });
 }
