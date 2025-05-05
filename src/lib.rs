@@ -7,9 +7,11 @@ pub mod ptp_packets;
 #[macro_export]
 macro_rules! unwrap {
     ($cond:expr) => {
+        #[allow(unused)]
+        let value = $cond;
         #[cfg(feature = "defmt")]
-        defmt::unwrap!($cond);
+        defmt::unwrap!(value);
         #[cfg(feature = "log")]
-        $cond.unwrap();
+        value.unwrap();
     };
 }

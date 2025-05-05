@@ -106,7 +106,11 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
             encoder.push(&crc.to_le_bytes())?;
             encoder.finalize()
         };
-        buf[1 + size] = MARKER;
+
+        if size + 1 >= MTU {
+            return Err(Error::BufferTooSmall);
+        }
+        buf[size + 1] = MARKER;
 
         self.inner
             .write_all(&buf[0..size + 1])

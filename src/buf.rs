@@ -18,6 +18,17 @@ impl<const N: usize> Buf<N> {
         }
     }
 
+    pub fn extend_from_slice(&mut self, slice: &[u8]) -> Result<(), OverflowError> {
+        if self.space() < slice.len() {
+            return Err(OverflowError);
+        }
+
+        self.as_mut_slice()[..slice.len()].copy_from_slice(slice);
+        let _ = self.mark_valid(slice.len()); // We already checked that it would fit.
+
+        Ok(())
+    }
+
     pub fn as_slice(&self) -> &[u8] {
         // NOTE(unsafe) avoid bound checks in the slicing operation
         // &buffer[..self.len]
@@ -67,6 +78,10 @@ impl<const N: usize> Buf<N> {
 
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    pub fn space(&self) -> usize {
+        N - self.len()
     }
 
     pub fn is_empty(&self) -> bool {
