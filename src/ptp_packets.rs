@@ -7,7 +7,7 @@ use bitfields::bitfield;
 use cobs::DestBufTooSmallError;
 use embedded_io_async::{Read, Write};
 
-use crate::{buf::Buf, unwrap};
+use crate::buf::Buf;
 
 const CRC_ALG: crc::Algorithm<u16> = crc::CRC_16_USB;
 const CRC: crc::Crc<u16> = crc::Crc::<u16>::new(&CRC_ALG);
