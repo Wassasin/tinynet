@@ -13,8 +13,6 @@ bitfields = "0.13.2"
 
 embedded-io-async = "0.6"
 
-scapegoat = "2.3"
-
 serde = { version = "1.0.219", features = ["derive"], default-features = false }
 postcard = { version = "1.0", features = ["experimental-derive"] }
 

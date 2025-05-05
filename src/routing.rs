@@ -6,16 +6,17 @@ use core::ops::BitOrAssign;
 
 use bitfields::bitfield;
 use postcard::experimental::max_size::MaxSize;
-use scapegoat::SgMap;
 use serde::{Deserialize, Serialize};
+
+pub const NUMBER_OF_ADDRESSES: usize = 2usize.pow(12);
 
 #[derive(
     Default, Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Serialize, Deserialize, MaxSize,
 )]
 pub struct Address(u16);
 pub const ADDRESS_MULTICAST: Address = Address(0x000);
-
-pub const NUMBER_OF_ADDRESSES: usize = 2usize.pow(12);
+pub const ADDRESS_FIRST: Address = Address(0x001);
+pub const ADDRESS_LAST: Address = Address((NUMBER_OF_ADDRESSES - 1) as u16);
 
 #[derive(Debug)]
 pub struct AddressOutOfRange;
@@ -30,7 +31,7 @@ impl TryFrom<u16> for Address {
 
 impl Address {
     const fn try_from(value: u16) -> Result<Self, AddressOutOfRange> {
-        if value < ADDRESS_MULTICAST.0 {
+        if value >= ADDRESS_FIRST.0 && value <= ADDRESS_LAST.0 {
             Ok(Address(value))
         } else {
             Err(AddressOutOfRange)
@@ -119,29 +120,22 @@ impl Iterator for PortSetIterator {
 }
 
 pub struct Router<const TABLE_SIZE: usize> {
-    table: SgMap<Address, PortSet, TABLE_SIZE>,
+    table: [PortSet; TABLE_SIZE],
 }
 
 impl<const TABLE_SIZE: usize> Router<TABLE_SIZE> {
     pub fn new() -> Self {
         Self {
-            table: SgMap::new(),
+            table: [PortSet::default(); TABLE_SIZE],
         }
     }
 
     pub fn add_route(&mut self, port: PortId, address: Address) {
         let port = PortSet::from(port);
-        self.table
-            .entry(address)
-            .and_modify(|set| *set |= port)
-            .or_insert(port);
+        self.table[address.0 as usize] |= port;
     }
 
     pub fn get_route(&self, address: Address) -> PortSet {
-        if let Some(set) = self.table.get(&address) {
-            *set
-        } else {
-            PortSet::empty()
-        }
+        self.table[address.0 as usize]
     }
 }
