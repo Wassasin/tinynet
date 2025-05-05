@@ -91,14 +91,45 @@ async fn todo() {
 
     let master_fut = async {
         let mut buf = [0u8; 64];
+
+        // Master RX
         let size = master.transfer(&mut buf, None).await.unwrap().unwrap();
-        assert_eq!(&buf[0..size - 1], pkt);
+        assert_eq!(&buf[0..size], pkt);
+
+        // Master TX
+        let result = master.transfer(&mut buf, Some(pkt)).await.unwrap();
+        assert!(result.is_none());
+
+        // Master TX+RX
+        let size = master.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
+        assert_eq!(&buf[0..size], pkt);
+
+        for _ in 0..5 {
+            // Master RX empty
+            let result = master.transfer(&mut buf, None).await.unwrap();
+            assert!(result.is_none());
+        }
     };
     let slave_fut = async {
         let mut buf = [0u8; 64];
+
+        // Slave TX
         let result = slave.transfer(&mut buf, Some(pkt)).await.unwrap();
         assert!(result.is_none());
-        let size = master.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
+
+        // Slave RX
+        let size = slave.transfer(&mut buf, None).await.unwrap().unwrap();
+        assert_eq!(&buf[0..size], pkt);
+
+        // Slave TX+RX
+        let size = slave.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
+        assert_eq!(&buf[0..size], pkt);
+
+        for _ in 0..5 {
+            // Slave RX empty
+            let result = slave.transfer(&mut buf, None).await.unwrap();
+            assert!(result.is_none());
+        }
     };
 
     embassy_futures::join::join(master_fut, slave_fut).await;

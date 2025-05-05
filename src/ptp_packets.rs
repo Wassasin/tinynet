@@ -8,6 +8,8 @@ use cobs::DestBufTooSmallError;
 use embedded_io_async::{Read, Write};
 use endian_num::le16;
 
+use crate::{buf::Buf, unwrap};
+
 const CRC_ALG: crc::Algorithm<u16> = crc::CRC_16_USB;
 const CRC: crc::Crc<u16> = crc::Crc::<u16>::new(&CRC_ALG);
 
@@ -26,6 +28,7 @@ const EMPTY_HEADER_CRC_BYTES: [u8; CRC_LEN] = EMPTY_HEADER_CRC.to_le_bytes();
 const MARKER: u8 = 0x00;
 
 struct Transceiver<T: Read + Write, const MTU: usize> {
+    rx_buf: Buf<MTU>,
     inner: T,
 }
 
@@ -59,11 +62,9 @@ impl Header {
 pub enum Error<E> {
     /// Underlying buffer to store packet in is too small.
     BufferTooSmall,
-    /// Missing marker in stream.
-    MissingMarker,
     /// Cobs encoding is malformed.
     CobsEncoding,
-    /// The header + body + checksum structure is malformed.
+    /// The header + body + checksum + marker structure is malformed.
     Malformed,
     /// Checksum of package is incorrect.
     Checksum,
@@ -83,6 +84,12 @@ impl<E> From<cobs::DecodeError> for Error<E> {
     }
 }
 
+impl<E> From<crate::buf::OverflowError> for Error<E> {
+    fn from(_value: crate::buf::OverflowError) -> Self {
+        Error::BufferTooSmall
+    }
+}
+
 impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
     async fn send(&mut self, header: Header, data: &[u8]) -> Result<(), Error<T::Error>> {
         let header = header.to_bytes();
@@ -92,9 +99,8 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         let crc = digest.finalize();
 
         let mut buf = [0u8; MTU];
-        buf[0] = MARKER;
         let size = {
-            let mut encoder = cobs::CobsEncoder::new(&mut buf[1..]);
+            let mut encoder = cobs::CobsEncoder::new(&mut buf);
             encoder.push(&header)?;
             encoder.push(data)?;
             encoder.push(&crc.to_le_bytes())?;
@@ -103,7 +109,7 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         buf[1 + size] = MARKER;
 
         self.inner
-            .write_all(&buf[0..size + 2])
+            .write_all(&buf[0..size + 1])
             .await
             .map_err(Error::Inner)?;
 
@@ -122,45 +128,15 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         .await
     }
 
-    async fn receive(&mut self, data: &mut [u8]) -> Result<Header, Error<T::Error>> {
-        let mut rx_buf = [0u8; MTU];
-        let mut total_size = 0;
+    fn decode_frame(source: &mut [u8], destination: &mut [u8]) -> Result<Header, Error<T::Error>> {
+        let size = cobs::decode_in_place(source)?;
+        let source = &source[0..size];
 
-        loop {
-            let size = self
-                .inner
-                .read(&mut rx_buf[total_size..])
-                .await
-                .map_err(Error::Inner)?;
-            total_size += size;
-
-            // Read should always deliver at least one byte.
-            assert!(total_size > 0);
-
-            if rx_buf[0] != MARKER {
-                return Err(Error::MissingMarker);
-            }
-
-            if total_size > 1 && rx_buf[total_size - 1] == MARKER {
-                // Done!
-                break;
-            }
-
-            if total_size == rx_buf.len() {
-                return Err(Error::BufferTooSmall);
-            }
-        }
-
-        // Content without two markers at beginning and end.
-        let rx_content = &mut rx_buf[1..total_size - 1];
-        let rx_size = cobs::decode_in_place(rx_content)?;
-        let rx_content = &rx_content[0..rx_size];
-
-        if rx_content.len() < HEADER_LEN + CRC_LEN {
+        if source.len() < HEADER_LEN + CRC_LEN {
             return Err(Error::Malformed);
         }
 
-        let (rx_header_body, rx_checksum) = rx_content.split_at(rx_content.len() - CRC_LEN);
+        let (rx_header_body, rx_checksum) = source.split_at(source.len() - CRC_LEN);
 
         // Check checksum
         if CRC.checksum(rx_header_body).to_le_bytes() != rx_checksum {
@@ -179,13 +155,55 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
             return Err(Error::Malformed);
         }
 
-        if rx_body.len() > data.len() {
+        if rx_body.len() > destination.len() {
             return Err(Error::BufferTooSmall);
         }
 
-        data[0..rx_body.len()].copy_from_slice(rx_body);
+        destination[0..rx_body.len()].copy_from_slice(rx_body);
 
         Ok(rx_header)
+    }
+
+    async fn receive(&mut self, data: &mut [u8]) -> Result<Header, Error<T::Error>> {
+        let mut scanned_upto = 0usize;
+
+        // Pull from underlying interface until we receive at least a full frame.
+        let frame_len = loop {
+            // To start off, check if we have a full frame already in our rx buffer.
+            let marker = self.rx_buf.as_slice()[scanned_upto..]
+                .into_iter()
+                .enumerate()
+                .find(|(_i, b)| **b == MARKER);
+            scanned_upto = self.rx_buf.len();
+
+            if let Some((marker_i, _)) = marker {
+                break marker_i;
+            }
+
+            if self.rx_buf.is_full() {
+                // Give up on our current receive buffer, it is full of garbage.
+                // TODO keep statistics
+                self.rx_buf.clear();
+                continue;
+            }
+
+            let size = self
+                .inner
+                .read(&mut self.rx_buf.free_mut_slice())
+                .await
+                .map_err(Error::Inner)?;
+
+            // Note(unwrap): free_mut_slice max size corresponds to available space in rx_buf,
+            // hence size can only be bigger if `inner` does not abide by the IO interface rules.
+            unwrap!(self.rx_buf.mark_valid(size));
+        };
+
+        let result = Self::decode_frame(&mut self.rx_buf.as_mut_slice()[..frame_len], data);
+
+        // Regardless of result, delete the candidate frame data.
+        self.rx_buf.truncate_front(frame_len + 1);
+
+        result
     }
 }
 
@@ -200,7 +218,10 @@ pub struct Slave<T: Read + Write, const MTU: usize> {
 impl<T: Read + Write, const MTU: usize> Master<T, MTU> {
     pub const fn new(inner: T) -> Self {
         Self {
-            inner: Transceiver { inner },
+            inner: Transceiver {
+                rx_buf: Buf::new(),
+                inner,
+            },
         }
     }
 }
@@ -208,7 +229,10 @@ impl<T: Read + Write, const MTU: usize> Master<T, MTU> {
 impl<T: Read + Write, const MTU: usize> Slave<T, MTU> {
     pub const fn new(inner: T) -> Self {
         Self {
-            inner: Transceiver { inner },
+            inner: Transceiver {
+                rx_buf: Buf::new(),
+                inner,
+            },
         }
     }
 }
@@ -239,7 +263,7 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
 
             match self.inner.receive(rx_packet).await {
                 Ok(header) => {
-                    if !header.ack() {
+                    if tx_packet.is_some() && !header.ack() {
                         continue; // Try again
                     }
 
@@ -261,7 +285,7 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
                     }
                 }
                 // Transmission related issues
-                Err(Error::Checksum) | Err(Error::CobsEncoding) | Err(Error::MissingMarker) => {
+                Err(Error::Checksum) | Err(Error::CobsEncoding) => {
                     // TODO mark statistics
                     continue;
                 }
@@ -302,18 +326,14 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                         self.inner
                             .send(
                                 Header::new()
-                                    .with_ack(true)
+                                    .with_ack(header.has_data())
                                     .with_has_data(true)
                                     .with_len(tx_packet.len() as u16),
                                 tx_packet,
                             )
                             .await?;
 
-                        if header.has_data() {
-                            continue; // Receive ACK first.
-                        } else {
-                            return Ok(None);
-                        }
+                        continue; // Receive ACK first.
                     } else {
                         self.inner
                             .send(
@@ -332,9 +352,8 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                     }
                 }
                 // Transmission related issues
-                Err(Error::Checksum) | Err(Error::CobsEncoding) | Err(Error::MissingMarker) => {
+                Err(Error::Checksum) | Err(Error::CobsEncoding) => {
                     // TODO mark statistics
-
                     // Send a NACK, request retransmission.
                     self.inner.send_empty_nack_request().await?;
                     continue;

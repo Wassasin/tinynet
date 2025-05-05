@@ -40,9 +40,7 @@ impl embedded_io_async::Read for MockHalfDuplexSide<'_> {
 impl embedded_io_async::Write for MockHalfDuplexSide<'_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         log::trace!("{} >> {:0x?}", self.name, &buf);
-        let result = self.tx.write(buf).await;
-        log::trace!("{} >> wrote {}/{}", self.name, result, buf.len());
-        Ok(result)
+        Ok(self.tx.write(buf).await)
     }
 }
 
@@ -88,22 +86,36 @@ async fn main() {
         let mut buf = [0u8; 64];
 
         // Master RX
+        log::info!("Master RX");
         let size = master.transfer(&mut buf, None).await.unwrap().unwrap();
         assert_eq!(&buf[0..size], pkt);
 
         // Master TX
+        log::info!("Master TX");
         let result = master.transfer(&mut buf, Some(pkt)).await.unwrap();
         assert!(result.is_none());
+
+        // Master TX+RX
+        log::info!("Master TX+RX");
+        let size = master.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
+        assert_eq!(&buf[0..size], pkt);
     };
     let slave_fut = async {
         let mut buf = [0u8; 64];
 
         // Slave TX
+        log::info!("Slave TX");
         let result = slave.transfer(&mut buf, Some(pkt)).await.unwrap();
         assert!(result.is_none());
 
         // Slave RX
+        log::info!("Slave RX");
         let size = slave.transfer(&mut buf, None).await.unwrap().unwrap();
+        assert_eq!(&buf[0..size], pkt);
+
+        // Slave TX+RX
+        log::info!("Slave TX+RX");
+        let size = slave.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
         assert_eq!(&buf[0..size], pkt);
     };
 
