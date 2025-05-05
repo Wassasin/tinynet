@@ -1,8 +1,15 @@
+use crate::routing::Header;
+
 pub mod discovery;
 
-trait PacketPipe {
+#[allow(async_fn_in_trait)]
+pub trait PacketPipe {
     const MTU: usize;
     type Error;
-    async fn receive(&mut self, rx_packet: &mut [u8]) -> Result<usize, Self::Error>;
-    async fn send(&mut self, tx_packet: &mut [u8]) -> Result<(), Self::Error>;
+
+    /// Await until a full packet is received.
+    async fn receive(&mut self, rx_body: &mut [u8]) -> Result<(Header, usize), Self::Error>;
+
+    /// Send a full packet.
+    async fn send(&mut self, tx_header: &Header, tx_packet: &mut [u8]) -> Result<(), Self::Error>;
 }

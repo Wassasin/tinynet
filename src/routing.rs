@@ -18,6 +18,8 @@ pub const ADDRESS_MULTICAST: Address = Address(0x000);
 pub const ADDRESS_FIRST: Address = Address(0x001);
 pub const ADDRESS_LAST: Address = Address((NUMBER_OF_ADDRESSES - 1) as u16);
 
+pub const TTL_UNLIMITED: u8 = 0b0000;
+
 #[derive(Debug)]
 pub struct AddressOutOfRange;
 
@@ -51,7 +53,7 @@ impl Address {
 }
 
 #[bitfield(u32)]
-struct Header {
+pub struct Header {
     #[bits(4)]
     protocol: u8,
     #[bits(4)]
