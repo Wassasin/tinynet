@@ -2,8 +2,9 @@
 
 pub(crate) mod buf;
 
-pub mod embedded_protocol;
+pub mod protocols;
 pub mod ptp_packets;
+pub mod routing;
 
 #[macro_export]
 macro_rules! unwrap {

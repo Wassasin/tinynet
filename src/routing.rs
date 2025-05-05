@@ -5,11 +5,17 @@
 use core::ops::BitOrAssign;
 
 use bitfields::bitfield;
+use postcard::experimental::max_size::MaxSize;
 use scapegoat::SgMap;
+use serde::{Deserialize, Serialize};
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(
+    Default, Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Serialize, Deserialize, MaxSize,
+)]
 pub struct Address(u16);
-pub const ADDRESS_MULTICAST: Address = Address(0xFFF);
+pub const ADDRESS_MULTICAST: Address = Address(0x000);
+
+pub const NUMBER_OF_ADDRESSES: usize = 2usize.pow(12);
 
 #[derive(Debug)]
 pub struct AddressOutOfRange;
@@ -45,7 +51,10 @@ impl Address {
 
 #[bitfield(u32)]
 struct Header {
+    #[bits(4)]
     protocol: u8,
+    #[bits(4)]
+    ttl: u8,
     #[bits(12)]
     src: Address,
     #[bits(12)]
