@@ -11,8 +11,7 @@ crc = "3.2"
 cobs = "0.3"
 embedded-io-async = "0.6"
 
-bitfield-struct = "0.10"
-endian-num = { version = "0.2", features = ["linux-types"] }
+bitfields = "0.13.2"
 
 [dev-dependencies]
 embassy-sync = "0.6.2"

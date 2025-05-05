@@ -149,14 +149,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 
 [[package]]
-name = "bitfield-struct"
-version = "0.10.1"
+name = "bitfields"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2be5a46ba01b60005ae2c51a36a29cfe134bcacae2dd5cedcd4615fbaad1494b"
+checksum = "7151782e2cd1dd0a1b00951a8b1be6b242f9a2240df9d244e3a7dbf7b55e7ac0"
+dependencies = [
+ "bitfields-impl",
+]
+
+[[package]]
+name = "bitfields-impl"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6675c064f07fe6e2433bc55263e114db648288e539e7fda779abd3e0a2bfe93b"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.101",
+ "thiserror",
 ]
 
 [[package]]
@@ -313,12 +323,6 @@ checksum = "3ff09972d4073aa8c299395be75161d582e7629cd663171d62af73c8d50dba3f"
 dependencies = [
  "embedded-io",
 ]
-
-[[package]]
-name = "endian-num"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b4a54dfedecb1dc004776a597db0c858cf6c31579296734511309291b8399ce"
 
 [[package]]
 name = "env_logger"
@@ -539,14 +543,13 @@ name = "mac-rf"
 version = "0.1.0"
 dependencies = [
  "async-std",
- "bitfield-struct",
+ "bitfields",
  "cobs",
  "crc",
  "defmt",
  "embassy-futures",
  "embassy-sync",
  "embedded-io-async",
- "endian-num",
  "log",
  "pretty_env_logger",
 ]

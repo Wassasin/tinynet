@@ -3,10 +3,9 @@
 //! Packets may be dropped or re-transmitted, but will never be corrupt.
 //! The flags in this protocol enable fast retransmission if a package was not received correctly.
 
-use bitfield_struct::bitfield;
+use bitfields::bitfield;
 use cobs::DestBufTooSmallError;
 use embedded_io_async::{Read, Write};
-use endian_num::le16;
 
 use crate::{buf::Buf, unwrap};
 
@@ -35,7 +34,7 @@ pub trait PacketInterface {
     ) -> Result<Option<usize>, Self::Error>;
 }
 
-#[bitfield(u16, repr = le16, from = le16::from_ne, into = le16::to_ne)]
+#[bitfield(u16)]
 struct Header {
     ack: bool,
     allow_data: bool,
@@ -114,11 +113,12 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
 
     async fn send_empty_nack_request(&mut self) -> Result<(), Error<T::Error>> {
         self.send(
-            Header::new()
+            HeaderBuilder::new()
                 .with_ack(false)
                 .with_allow_data(true)
                 .with_has_data(false)
-                .with_len(0),
+                .with_len(0)
+                .build(),
             &[],
         )
         .await
@@ -141,7 +141,7 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
 
         let (rx_header, rx_body) = rx_header_body.split_at(HEADER_LEN);
         let rx_header = if let Ok(rx_header) = rx_header.try_into() {
-            Header::from_bits(le16::from_le_bytes(rx_header))
+            Header::from_bits(u16::from_le_bytes(rx_header))
         } else {
             // We just split on HEADER_LEN, so the conversion must succeed.
             unreachable!();
@@ -245,11 +245,12 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
             if let Some(tx_packet) = tx_packet {
                 self.inner
                     .send(
-                        Header::new()
+                        HeaderBuilder::new()
                             .with_ack(false)
                             .with_has_data(true)
                             .with_allow_data(true)
-                            .with_len(tx_packet.len() as u16),
+                            .with_len(tx_packet.len() as u16)
+                            .build(),
                         tx_packet,
                     )
                     .await?;
@@ -266,11 +267,12 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
                     if header.has_data() {
                         self.inner
                             .send(
-                                Header::new()
+                                HeaderBuilder::new()
                                     .with_ack(true)
                                     .with_has_data(false)
                                     .with_allow_data(false)
-                                    .with_len(0),
+                                    .with_len(0)
+                                    .build(),
                                 &[],
                             )
                             .await?;
@@ -321,10 +323,11 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
 
                         self.inner
                             .send(
-                                Header::new()
+                                HeaderBuilder::new()
                                     .with_ack(header.has_data())
                                     .with_has_data(true)
-                                    .with_len(tx_packet.len() as u16),
+                                    .with_len(tx_packet.len() as u16)
+                                    .build(),
                                 tx_packet,
                             )
                             .await?;
@@ -333,10 +336,11 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                     } else {
                         self.inner
                             .send(
-                                Header::new()
+                                HeaderBuilder::new()
                                     .with_ack(true)
                                     .with_has_data(false)
-                                    .with_allow_data(true),
+                                    .with_allow_data(true)
+                                    .build(),
                                 &[],
                             )
                             .await?;
