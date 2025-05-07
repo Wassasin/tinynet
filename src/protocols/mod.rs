@@ -8,6 +8,8 @@ pub trait PacketPipe {
     type Error;
 
     /// Await until a full packet is received.
+    ///
+    /// Must be cancel-safe.
     async fn receive(&mut self, rx_body: &mut [u8]) -> Result<(Header, usize), Self::Error>;
 
     /// Send a full packet.

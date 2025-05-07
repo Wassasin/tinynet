@@ -4,6 +4,7 @@ use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     watch::{Sender, Watch},
 };
+use embassy_time::{Duration, Instant, Timer};
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,7 @@ use crate::routing::{ADDRESS_MULTICAST, Address, Header, HeaderBuilder, TTL_UNLI
 use super::PacketPipe;
 
 const MTU: usize = Packet::POSTCARD_MAX_SIZE;
+const REQUEST_PERIOD: Duration = Duration::from_secs(10);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, MaxSize)]
 pub struct HardwareAddress(pub [u8; 8]);
@@ -27,13 +29,20 @@ pub enum Packet {
     /// Broadcast question to fetch an hardware address.
     Request(HardwareAddress),
     /// Request to set an address by the master of the network.
-    Assign(HardwareAddress, Address),
+    Assign {
+        /// Representation of our globally unique hardware address assigned at factory.
+        hardware_address: HardwareAddress,
+        /// Network address that we got assigned.
+        address: Address,
+        /// Time to live, in seconds.
+        ttl_seconds: u32,
+    },
 }
 
 #[derive(Clone)]
 enum State {
     Unassigned,
-    Assigned(Address),
+    Assigned { address: Address, until: Instant },
 }
 
 pub struct Client<P: PacketPipe, const N: usize = 1> {
@@ -84,10 +93,17 @@ impl<P: PacketPipe, const N: usize> Client<P, N> {
 }
 
 impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
+    /// Convenience function to get state.
+    fn state(&self) -> State {
+        // Note(unwrap): self.state is guaranteed to be sent at construction.
+        unwrap!(self.state.try_get())
+    }
+
+    /// Our assigned address, if assigned.
     fn our_address(&self) -> Option<Address> {
-        match unwrap!(self.state.try_get()) {
+        match self.state() {
             State::Unassigned => None,
-            State::Assigned(address) => Some(address),
+            State::Assigned { address, .. } => Some(address),
         }
     }
 
@@ -101,6 +117,7 @@ impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
     async fn send_packet(&mut self, packet: &Packet, dest: Address) {
         let our_address = self.our_address().unwrap_or(ADDRESS_MULTICAST);
 
+        // Note(unwrap): serialize is infallible due to MaxSize.
         let mut tx_body = [0u8; MTU];
         let tx_body = unwrap!(postcard::to_slice(packet, &mut tx_body));
 
@@ -128,8 +145,8 @@ impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
             }
             Packet::WhoHas(hardware_address) => {
                 if hardware_address == self.hardware_address {
-                    match unwrap!(self.state.try_get()) {
-                        State::Assigned(_) => {
+                    match self.state() {
+                        State::Assigned { .. } => {
                             let _ = self
                                 .send_packet(
                                     &Packet::IHave(self.hardware_address.clone()),
@@ -146,9 +163,16 @@ impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
             Packet::IHave(_) | Packet::Request(_) => {
                 // Ignore
             }
-            Packet::Assign(hardware_address, address) => {
+            Packet::Assign {
+                hardware_address,
+                address,
+                ttl_seconds,
+            } => {
                 if hardware_address == self.hardware_address {
-                    self.state.send(State::Assigned(*address));
+                    self.state.send(State::Assigned {
+                        address: *address,
+                        until: Instant::now() + Duration::from_secs(*ttl_seconds as u64),
+                    });
                     info!("Got assigned address {}", address);
 
                     let _ = self
@@ -162,16 +186,44 @@ impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
     }
 
     pub async fn run(&mut self) {
+        let mut last_request: Option<Instant> = None;
         let mut rx_body = [0u8; MTU];
         loop {
-            match self.pipe.receive(&mut rx_body).await {
-                Ok((header, size)) => match postcard::from_bytes::<Packet>(&rx_body[..size]) {
-                    Ok(packet) => self.handle_packet(&header, &packet).await,
-                    Err(e) => {
-                        error!("Got malformed packet: {}", e);
+            let deadline_fut = {
+                let state = self.state();
+                async move {
+                    match state {
+                        State::Unassigned => {
+                            if let Some(last_request) = last_request {
+                                Timer::at(last_request + REQUEST_PERIOD).await
+                            } else {
+                                // Immediately return
+                            };
+                        }
+                        State::Assigned { until, .. } => Timer::at(until).await,
                     }
+                }
+            };
+            let receive_fut = self.pipe.receive(&mut rx_body);
+
+            match embassy_futures::select::select(receive_fut, deadline_fut).await {
+                embassy_futures::select::Either::First(tup) => match tup {
+                    Ok((header, size)) => match postcard::from_bytes::<Packet>(&rx_body[..size]) {
+                        Ok(packet) => self.handle_packet(&header, &packet).await,
+                        Err(e) => {
+                            error!("Got malformed packet: {}", e);
+                        }
+                    },
+                    Err(e) => self.handle(Err(e)),
                 },
-                Err(e) => self.handle(Err(e)),
+                embassy_futures::select::Either::Second(()) => {
+                    last_request = Some(Instant::now());
+                    self.send_packet(
+                        &Packet::Request(self.hardware_address.clone()),
+                        ADDRESS_MULTICAST,
+                    )
+                    .await
+                }
             }
         }
     }
@@ -180,7 +232,7 @@ impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
 impl<'a, const N: usize> ClientView<'a, N> {
     pub fn state(&self) -> Option<Address> {
         match self.state.try_get() {
-            Some(State::Assigned(address)) => Some(address),
+            Some(State::Assigned { address, .. }) => Some(address),
             _ => None,
         }
     }
