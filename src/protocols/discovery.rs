@@ -2,8 +2,7 @@
 
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
-    mutex::Mutex,
-    watch::{Receiver, Sender, Watch},
+    watch::{Sender, Watch},
 };
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
@@ -37,35 +36,31 @@ enum State {
     Assigned(Address),
 }
 
-pub struct Client<P: PacketPipe, const N: usize> {
-    state: Mutex<NoopRawMutex, State>,
-    state_update: Watch<NoopRawMutex, (), N>,
-
+pub struct Client<P: PacketPipe, const N: usize = 1> {
+    state: Watch<NoopRawMutex, State, N>,
     pipe: P,
     protocol_id: u8,
     hardware_address: HardwareAddress,
 }
 
 struct ClientCore<'a, P: PacketPipe, const N: usize> {
-    state: &'a Mutex<NoopRawMutex, State>,
-    state_sender: Sender<'a, NoopRawMutex, (), N>,
-
+    state: Sender<'a, NoopRawMutex, State, N>,
     pipe: &'a mut P,
     protocol_id: u8,
     hardware_address: &'a HardwareAddress,
 }
 
 pub struct ClientView<'a, const N: usize> {
-    state: &'a Mutex<NoopRawMutex, State>,
-    state_receiver: Receiver<'a, NoopRawMutex, (), N>,
+    state: &'a Watch<NoopRawMutex, State, N>,
 }
 
 impl<P: PacketPipe, const N: usize> Client<P, N> {
     pub fn new(pipe: P, protocol_id: u8, hardware_address: HardwareAddress) -> Self {
-        Self {
-            state: Mutex::new(State::Unassigned),
-            state_update: Watch::new(),
+        let state = Watch::new();
+        state.sender().send(State::Unassigned);
 
+        Self {
+            state,
             protocol_id,
             hardware_address,
             pipe,
@@ -74,30 +69,23 @@ impl<P: PacketPipe, const N: usize> Client<P, N> {
 
     pub fn run(&mut self) -> (impl Future<Output = ()>, ClientView<'_, N>) {
         let task = async {
-            let core = ClientCore {
-                state: &self.state,
-                state_sender: self.state_update.sender(),
+            let mut core = ClientCore {
+                state: self.state.sender(),
                 pipe: &mut self.pipe,
                 protocol_id: self.protocol_id,
                 hardware_address: &self.hardware_address,
             };
 
-            core.run()
+            core.run().await
         };
 
-        (
-            task,
-            ClientView {
-                state: &self.state,
-                state_receiver: self.state_update.receiver(),
-            },
-        )
+        (task, ClientView { state: &self.state })
     }
 }
 
 impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
     fn our_address(&self) -> Option<Address> {
-        match self.state {
+        match unwrap!(self.state.try_get()) {
             State::Unassigned => None,
             State::Assigned(address) => Some(address),
         }
@@ -136,13 +124,21 @@ impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
         match packet {
             Packet::UnassignAll => {
                 info!("Address unassigned");
-                self.state = State::Unassigned;
+                self.state.send(State::Unassigned);
             }
             Packet::WhoHas(hardware_address) => {
-                if *hardware_address == self.hardware_address {
-                    let _ = self
-                        .send_packet(&Packet::IHave(self.hardware_address.clone()), header.src())
-                        .await;
+                if hardware_address == self.hardware_address {
+                    match unwrap!(self.state.try_get()) {
+                        State::Assigned(_) => {
+                            let _ = self
+                                .send_packet(
+                                    &Packet::IHave(self.hardware_address.clone()),
+                                    header.src(),
+                                )
+                                .await;
+                        }
+                        _ => {}
+                    }
                 } else {
                     // Ignore
                 }
@@ -151,8 +147,8 @@ impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
                 // Ignore
             }
             Packet::Assign(hardware_address, address) => {
-                if *hardware_address == self.hardware_address {
-                    self.state = State::Assigned(*address);
+                if hardware_address == self.hardware_address {
+                    self.state.send(State::Assigned(*address));
                     info!("Got assigned address {}", address);
 
                     let _ = self
@@ -165,28 +161,27 @@ impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
         }
     }
 
-    pub fn run(&mut self) -> (impl Future<Output = ()>, ClientView<'_, N>) {
-        let task = async {
-            let mut rx_body = [0u8; MTU];
-            loop {
-                match self.pipe.receive(&mut rx_body).await {
-                    Ok((header, size)) => match postcard::from_bytes::<Packet>(&rx_body[..size]) {
-                        Ok(packet) => self.handle_packet(&header, &packet).await,
-                        Err(e) => {
-                            error!("Got malformed packet: {}", e);
-                        }
-                    },
-                    Err(e) => self.handle(Err(e)),
-                }
+    pub async fn run(&mut self) {
+        let mut rx_body = [0u8; MTU];
+        loop {
+            match self.pipe.receive(&mut rx_body).await {
+                Ok((header, size)) => match postcard::from_bytes::<Packet>(&rx_body[..size]) {
+                    Ok(packet) => self.handle_packet(&header, &packet).await,
+                    Err(e) => {
+                        error!("Got malformed packet: {}", e);
+                    }
+                },
+                Err(e) => self.handle(Err(e)),
             }
-        };
+        }
+    }
+}
 
-        (
-            task,
-            ClientView {
-                state: &self.state,
-                state_sender: self.state_update.sender(),
-            },
-        )
+impl<'a, const N: usize> ClientView<'a, N> {
+    pub fn state(&self) -> Option<Address> {
+        match self.state.try_get() {
+            Some(State::Assigned(address)) => Some(address),
+            _ => None,
+        }
     }
 }
