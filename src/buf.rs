@@ -65,7 +65,7 @@ impl<const N: usize> Buf<N> {
 
     /// Remove front `count` bytes and moves the rest of the buffer forward.
     pub fn truncate_front(&mut self, count: usize) {
-        self.buffer.copy_within(count.., 0);
+        self.buffer.copy_within(count..self.len, 0);
         self.len = self.len.saturating_sub(count);
     }
 
