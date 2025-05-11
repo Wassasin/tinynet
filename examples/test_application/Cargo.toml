@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-mac-rf = { path = "../.." }
+tinynet = { path = "../..", features = ["log"] }
 
 embedded-io-async = "0.6"
 

@@ -50,7 +50,8 @@ impl Header {
 }
 
 #[derive(Debug)]
-pub enum Error<E> {
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Error {
     /// Underlying buffer to store packet in is too small.
     BufferTooSmall,
     /// Cobs encoding is malformed.
@@ -60,29 +61,29 @@ pub enum Error<E> {
     /// Checksum of package is incorrect.
     Checksum,
     /// The internal IO mechanism returned an error.
-    Inner(E),
+    Inner,
 }
 
-impl<E> From<DestBufTooSmallError> for Error<E> {
+impl From<DestBufTooSmallError> for Error {
     fn from(_value: DestBufTooSmallError) -> Self {
         Error::BufferTooSmall
     }
 }
 
-impl<E> From<cobs::DecodeError> for Error<E> {
+impl From<cobs::DecodeError> for Error {
     fn from(_value: cobs::DecodeError) -> Self {
         Error::CobsEncoding
     }
 }
 
-impl<E> From<crate::buf::OverflowError> for Error<E> {
+impl From<crate::buf::OverflowError> for Error {
     fn from(_value: crate::buf::OverflowError) -> Self {
         Error::BufferTooSmall
     }
 }
 
 impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
-    async fn send(&mut self, header: Header, data: &[u8]) -> Result<(), Error<T::Error>> {
+    async fn send(&mut self, header: Header, data: &[u8]) -> Result<(), Error> {
         let header = header.to_bytes();
         let mut digest = CRC.digest();
         digest.update(&header);
@@ -103,15 +104,17 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         }
         buf[size + 1] = MARKER;
 
+        debug!("Transceiver sending {:?}", &buf[0..size + 1]);
+
         self.inner
             .write_all(&buf[0..size + 1])
             .await
-            .map_err(Error::Inner)?;
+            .map_err(|_| Error::Inner)?;
 
         Ok(())
     }
 
-    async fn send_empty_nack_request(&mut self) -> Result<(), Error<T::Error>> {
+    async fn send_empty_nack_request(&mut self) -> Result<(), Error> {
         self.send(
             HeaderBuilder::new()
                 .with_ack(false)
@@ -124,7 +127,7 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         .await
     }
 
-    fn decode_frame(source: &mut [u8], destination: &mut [u8]) -> Result<Header, Error<T::Error>> {
+    fn decode_frame(source: &mut [u8], destination: &mut [u8]) -> Result<Header, Error> {
         let size = cobs::decode_in_place(source)?;
         let source = &source[0..size];
 
@@ -160,34 +163,40 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         Ok(rx_header)
     }
 
-    async fn receive(&mut self, data: &mut [u8]) -> Result<Header, Error<T::Error>> {
+    async fn receive(&mut self, data: &mut [u8]) -> Result<Header, Error> {
         let mut scanned_upto = 0usize;
 
         // Pull from underlying interface until we receive at least a full frame.
         let frame_len = loop {
+            if self.rx_buf.is_full() {
+                // Give up on our current receive buffer, it is full of garbage.
+                // TODO keep statistics
+                warn!("Purged buffer of garbage");
+                self.rx_buf.clear();
+                scanned_upto = 0;
+                continue;
+            }
+
             // To start off, check if we have a full frame already in our rx buffer.
             let marker = self.rx_buf.as_slice()[scanned_upto..]
                 .iter()
                 .enumerate()
                 .find(|(_i, b)| **b == MARKER);
-            scanned_upto = self.rx_buf.len();
 
             if let Some((marker_i, _)) = marker {
-                break marker_i;
+                trace!("Found marker at {}", marker_i);
+                break scanned_upto + marker_i;
             }
 
-            if self.rx_buf.is_full() {
-                // Give up on our current receive buffer, it is full of garbage.
-                // TODO keep statistics
-                self.rx_buf.clear();
-                continue;
-            }
+            scanned_upto = self.rx_buf.len();
 
             let size = self
                 .inner
                 .read(self.rx_buf.free_mut_slice())
                 .await
-                .map_err(Error::Inner)?;
+                .map_err(|_| Error::Inner)?;
+
+            trace!("Got {:?}", &self.rx_buf.free_mut_slice()[0..size]);
 
             // Note(unwrap): free_mut_slice max size corresponds to available space in rx_buf,
             // hence size can only be bigger if `inner` does not abide by the IO interface rules.
@@ -198,6 +207,8 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
 
         // Regardless of result, delete the candidate frame data.
         self.rx_buf.truncate_front(frame_len + 1);
+
+        trace!("Buffer at {}", self.rx_buf.len());
 
         result
     }
@@ -234,7 +245,7 @@ impl<T: Read + Write, const MTU: usize> Slave<T, MTU> {
 }
 
 impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
-    type Error = Error<T::Error>;
+    type Error = Error;
 
     async fn transfer(
         &mut self,
@@ -261,6 +272,7 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
             match self.inner.receive(rx_packet).await {
                 Ok(header) => {
                     if tx_packet.is_some() && !header.ack() {
+                        warn!("Sent packet failure");
                         continue; // Try again
                     }
 
@@ -276,14 +288,18 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
                                 &[],
                             )
                             .await?;
-
+                        trace!("Master received slave data");
                         return Ok(Some(header.len() as usize));
                     } else {
+                        trace!("Master received slave empty");
                         return Ok(None);
                     }
                 }
                 // Transmission related issues
-                Err(Error::Checksum) | Err(Error::Malformed) | Err(Error::CobsEncoding) => {
+                Err(e @ Error::Checksum)
+                | Err(e @ Error::Malformed)
+                | Err(e @ Error::CobsEncoding) => {
+                    error!("Master error {:?}", e);
                     // TODO mark statistics
                     continue;
                 }
@@ -294,7 +310,7 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
 }
 
 impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
-    type Error = Error<T::Error>;
+    type Error = Error;
 
     async fn transfer(
         &mut self,
@@ -317,6 +333,7 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                     // Send our data with an acknowledgement.
                     if let Some(tx_packet) = tx_packet {
                         if !header.allow_data() {
+                            warn!("Slave wants to send data but master is not having it");
                             self.inner.send_empty_nack_request().await?;
                             continue;
                         }
@@ -347,14 +364,18 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                         if header.has_data() {
                             return Ok(result);
                         } else {
+                            trace!("Slave received master empty");
                             return Ok(None);
                         }
                     }
                 }
                 // Transmission related issues
-                Err(Error::Checksum) | Err(Error::Malformed) | Err(Error::CobsEncoding) => {
+                Err(e @ Error::Checksum)
+                | Err(e @ Error::Malformed)
+                | Err(e @ Error::CobsEncoding) => {
                     // TODO mark statistics
                     // Send a NACK, request retransmission.
+                    error!("Slave error {:?} ", e);
                     self.inner.send_empty_nack_request().await?;
                     continue;
                 }

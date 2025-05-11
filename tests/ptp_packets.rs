@@ -5,7 +5,7 @@ use embassy_sync::{
     pipe::{Pipe, Reader, Writer},
 };
 use embedded_io_async::{Read, Write};
-use mac_rf::ptp_packets::{Master, PacketInterface, Slave};
+use tinynet::ptp_packets::{Master, PacketInterface, Slave};
 
 const PIPE_LENGTH: usize = 128;
 
@@ -95,19 +95,25 @@ fn rx_tx() {
         let master_fut = async {
             let mut buf = [0u8; 64];
 
-            // Master RX
-            let size = master.transfer(&mut buf, None).await.unwrap().unwrap();
-            assert_eq!(&buf[0..size], pkt);
+            for _ in 0..1000 {
+                // Master RX
+                let size = master.transfer(&mut buf, None).await.unwrap().unwrap();
+                assert_eq!(&buf[0..size], pkt);
+            }
 
-            // Master TX
-            let result = master.transfer(&mut buf, Some(pkt)).await.unwrap();
-            assert!(result.is_none());
+            for _ in 0..1000 {
+                // Master TX
+                let result = master.transfer(&mut buf, Some(pkt)).await.unwrap();
+                assert!(result.is_none());
+            }
 
-            // Master TX+RX
-            let size = master.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
-            assert_eq!(&buf[0..size], pkt);
+            for _ in 0..1000 {
+                // Master TX+RX
+                let size = master.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
+                assert_eq!(&buf[0..size], pkt);
+            }
 
-            for _ in 0..5 {
+            for _ in 0..1000 {
                 // Master RX empty
                 let result = master.transfer(&mut buf, None).await.unwrap();
                 assert!(result.is_none());
@@ -116,19 +122,25 @@ fn rx_tx() {
         let slave_fut = async {
             let mut buf = [0u8; 64];
 
-            // Slave TX
-            let result = slave.transfer(&mut buf, Some(pkt)).await.unwrap();
-            assert!(result.is_none());
+            for _ in 0..1000 {
+                // Slave TX
+                let result = slave.transfer(&mut buf, Some(pkt)).await.unwrap();
+                assert!(result.is_none());
+            }
 
-            // Slave RX
-            let size = slave.transfer(&mut buf, None).await.unwrap().unwrap();
-            assert_eq!(&buf[0..size], pkt);
+            for _ in 0..1000 {
+                // Slave RX
+                let size = slave.transfer(&mut buf, None).await.unwrap().unwrap();
+                assert_eq!(&buf[0..size], pkt);
+            }
 
-            // Slave TX+RX
-            let size = slave.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
-            assert_eq!(&buf[0..size], pkt);
+            for _ in 0..1000 {
+                // Slave TX+RX
+                let size = slave.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
+                assert_eq!(&buf[0..size], pkt);
+            }
 
-            for _ in 0..5 {
+            for _ in 0..1000 {
                 // Slave RX empty
                 let result = slave.transfer(&mut buf, None).await.unwrap();
                 assert!(result.is_none());

@@ -7,7 +7,7 @@ use embassy_sync::{
     pipe::{Pipe, Reader, Writer},
 };
 use embedded_io_async::{Read, Write};
-use mac_rf::ptp_packets::{Master, PacketInterface, Slave};
+use tinynet::ptp_packets::{Master, PacketInterface, Slave};
 
 const PIPE_LENGTH: usize = 256;
 
@@ -37,8 +37,10 @@ impl embedded_io_async::Read for MockHalfDuplexSide<'_> {
 
 impl embedded_io_async::Write for MockHalfDuplexSide<'_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        log::trace!("{} >> {:0x?}", self.name, &buf);
-        Ok(self.tx.write(buf).await)
+        let result = self.tx.write(buf).await;
+        log::trace!("{} >> {:0x?}", self.name, &buf[0..result]);
+
+        Ok(result)
     }
 }
 
@@ -95,8 +97,9 @@ async fn main() {
         let size = master.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
         assert_eq!(&buf[0..size], pkt);
 
-        for _ in 0..5 {
+        for i in 0..5 {
             // Master RX empty
+            log::debug!("Master {}", i);
             let result = master.transfer(&mut buf, None).await.unwrap();
             assert!(result.is_none());
         }
@@ -116,8 +119,9 @@ async fn main() {
         let size = slave.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
         assert_eq!(&buf[0..size], pkt);
 
-        for _ in 0..5 {
+        for i in 0..5 {
             // Slave RX empty
+            log::debug!("Slave {}", i);
             let result = slave.transfer(&mut buf, None).await.unwrap();
             assert!(result.is_none());
         }

@@ -8,3 +8,5 @@ pub(crate) mod buf;
 pub mod protocols;
 pub mod ptp_packets;
 pub mod routing;
+
+pub const PROTOCOL_DISCOVERY: u8 = 0x00;

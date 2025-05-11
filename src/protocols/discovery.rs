@@ -1,24 +1,41 @@
 //! Discovery protocol for management of network addresses.
 
+use core::fmt::{Display, Write};
+
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
-    watch::{Sender, Watch},
+    watch::{Receiver, Sender, Watch},
 };
 use embassy_time::{Duration, Instant, Timer};
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 
-use crate::routing::{ADDRESS_MULTICAST, Address, Header, HeaderBuilder, TTL_UNLIMITED};
+use crate::routing::{ADDRESS_MULTICAST, Address, Header};
 
-use super::PacketPipe;
+use super::{Packageable, PacketPipe};
 
 const MTU: usize = Packet::POSTCARD_MAX_SIZE;
 const REQUEST_PERIOD: Duration = Duration::from_secs(10);
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, MaxSize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, MaxSize, PartialOrd, Ord)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct HardwareAddress(pub [u8; 8]);
 
-#[derive(Serialize, Deserialize, MaxSize)]
+impl Display for HardwareAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        for v in self.0.iter() {
+            let lo = v & 0x0f;
+            let hi = (v & 0xf0) >> 4;
+            f.write_char(HEX[hi as usize] as char)?;
+            f.write_char(HEX[lo as usize] as char)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, MaxSize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Packet {
     /// Broadcast directive to all nodes to un-assign assigned addresses.
     UnassignAll,
@@ -39,100 +56,100 @@ pub enum Packet {
     },
 }
 
+impl Packet {
+    pub fn parse(buf: &[u8]) -> Result<Self, postcard::Error> {
+        postcard::from_bytes::<Packet>(buf)
+    }
+
+    pub fn to_bytes<'a>(&self, tx_body: &'a mut [u8]) -> Result<&'a mut [u8], postcard::Error> {
+        postcard::to_slice(self, tx_body)
+    }
+}
+
+impl Packageable for Packet {
+    type Error = postcard::Error;
+    const MAX_SIZE: usize = Packet::POSTCARD_MAX_SIZE;
+
+    fn package(&self, packet_body: &mut [u8]) -> Result<usize, Self::Error> {
+        Ok(self.to_bytes(packet_body)?.len())
+    }
+}
+
 #[derive(Clone)]
 enum State {
     Unassigned,
     Assigned { address: Address, until: Instant },
 }
 
-pub struct Client<P: PacketPipe, const N: usize = 1> {
-    state: Watch<NoopRawMutex, State, N>,
+pub struct Client<P: PacketPipe> {
+    state: Watch<NoopRawMutex, State, 1>,
     pipe: P,
-    protocol_id: u8,
     hardware_address: HardwareAddress,
 }
 
-struct ClientCore<'a, P: PacketPipe, const N: usize> {
-    state: Sender<'a, NoopRawMutex, State, N>,
+struct ClientCore<'a, P: PacketPipe> {
+    state: Sender<'a, NoopRawMutex, State, 1>,
     pipe: &'a mut P,
-    protocol_id: u8,
     hardware_address: &'a HardwareAddress,
 }
 
-pub struct ClientView<'a, const N: usize> {
-    state: &'a Watch<NoopRawMutex, State, N>,
+pub struct ClientView<'a> {
+    state: Receiver<'a, NoopRawMutex, State, 1>,
 }
 
-impl<P: PacketPipe, const N: usize> Client<P, N> {
-    pub fn new(pipe: P, protocol_id: u8, hardware_address: HardwareAddress) -> Self {
+impl<P: PacketPipe> Client<P> {
+    pub fn new(pipe: P, hardware_address: HardwareAddress) -> Self {
         let state = Watch::new();
         state.sender().send(State::Unassigned);
 
         Self {
             state,
-            protocol_id,
             hardware_address,
             pipe,
         }
     }
 
-    pub fn run(&mut self) -> (impl Future<Output = ()>, ClientView<'_, N>) {
+    pub fn run(&mut self) -> (impl Future<Output = ()>, ClientView<'_>) {
         let task = async {
             let mut core = ClientCore {
                 state: self.state.sender(),
                 pipe: &mut self.pipe,
-                protocol_id: self.protocol_id,
                 hardware_address: &self.hardware_address,
             };
 
             core.run().await
         };
 
-        (task, ClientView { state: &self.state })
+        (
+            task,
+            ClientView {
+                // Note(unwrap): got exactly 1 receiver.
+                state: unwrap!(self.state.receiver()),
+            },
+        )
     }
 }
 
-impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
+impl<'a, P: PacketPipe> ClientCore<'a, P> {
     /// Convenience function to get state.
     fn state(&self) -> State {
         // Note(unwrap): self.state is guaranteed to be sent at construction.
         unwrap!(self.state.try_get())
     }
 
-    /// Our assigned address, if assigned.
-    fn our_address(&self) -> Option<Address> {
-        match self.state() {
-            State::Unassigned => None,
-            State::Assigned { address, .. } => Some(address),
-        }
-    }
-
     fn handle(&mut self, result: Result<(), P::Error>) {
         if let Err(e) = result {
-            warn!("Underlying pipe error with {}", e);
+            warn!("Underlying pipe error with {:?}", e);
             // TODO maybe change state?
         }
     }
 
     async fn send_packet(&mut self, packet: &Packet, dest: Address) {
-        let our_address = self.our_address().unwrap_or(ADDRESS_MULTICAST);
-
-        // Note(unwrap): serialize is infallible due to MaxSize.
         let mut tx_body = [0u8; MTU];
-        let tx_body = unwrap!(postcard::to_slice(packet, &mut tx_body));
+        // Note(unwrap): to_bytes is infallible due to MaxSize.
+        let tx_body = unwrap!(packet.to_bytes(&mut tx_body));
 
-        let result = self
-            .pipe
-            .send(
-                &HeaderBuilder::new()
-                    .with_dst(dest)
-                    .with_src(our_address)
-                    .with_ttl(TTL_UNLIMITED)
-                    .with_protocol(self.protocol_id)
-                    .build(),
-                tx_body,
-            )
-            .await;
+        let result = self.pipe.send(dest, tx_body).await;
 
         self.handle(result)
     }
@@ -173,7 +190,7 @@ impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
                         address: *address,
                         until: Instant::now() + Duration::from_secs(*ttl_seconds as u64),
                     });
-                    info!("Got assigned address {}", address);
+                    info!("Got assigned address {:?}", address);
 
                     let _ = self
                         .send_packet(&Packet::IHave(self.hardware_address.clone()), header.src())
@@ -208,7 +225,7 @@ impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
 
             match embassy_futures::select::select(receive_fut, deadline_fut).await {
                 embassy_futures::select::Either::First(tup) => match tup {
-                    Ok((header, size)) => match postcard::from_bytes::<Packet>(&rx_body[..size]) {
+                    Ok((header, size)) => match Packet::parse(&rx_body[..size]) {
                         Ok(packet) => self.handle_packet(&header, &packet).await,
                         Err(e) => {
                             error!("Got malformed packet: {}", e);
@@ -229,11 +246,20 @@ impl<'a, P: PacketPipe, const N: usize> ClientCore<'a, P, N> {
     }
 }
 
-impl<'a, const N: usize> ClientView<'a, N> {
-    pub fn state(&self) -> Option<Address> {
+impl<'a> ClientView<'a> {
+    pub fn address(&mut self) -> Option<Address> {
         match self.state.try_get() {
             Some(State::Assigned { address, .. }) => Some(address),
             _ => None,
+        }
+    }
+
+    pub async fn wait_for_changed_address(&mut self) -> Option<Address> {
+        let result = self.state.changed().await;
+
+        match result {
+            State::Unassigned => None,
+            State::Assigned { address, .. } => Some(address),
         }
     }
 }
