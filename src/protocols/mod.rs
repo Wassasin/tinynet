@@ -1,8 +1,8 @@
 use crate::routing::{Address, Header};
 use core::fmt::Debug;
 
-pub mod custom;
 pub mod discovery;
+pub mod simple;
 
 #[allow(async_fn_in_trait)]
 pub trait PacketPipe {
@@ -19,7 +19,7 @@ pub trait PacketPipe {
     async fn receive(&mut self, rx_body: &mut [u8]) -> Result<(Header, usize), Self::Error>;
 
     /// Send a full packet.
-    async fn send(&mut self, dest: Address, tx_packet: &mut [u8]) -> Result<(), Self::Error>;
+    async fn send(&mut self, dest: Address, tx_packet: &[u8]) -> Result<(), Self::Error>;
 }
 
 pub trait Packageable {
@@ -32,4 +32,14 @@ pub trait Packageable {
 
     /// Write the current packet into `packet_body`, returning length of the slice that was written.
     fn package(&self, packet_body: &mut [u8]) -> Result<usize, Self::Error>;
+}
+
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct PackageError;
+
+impl From<postcard::Error> for PackageError {
+    fn from(_value: postcard::Error) -> Self {
+        PackageError
+    }
 }

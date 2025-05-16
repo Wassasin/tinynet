@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::routing::{ADDRESS_MULTICAST, Address, Header};
 
-use super::{Packageable, PacketPipe};
+use super::{PackageError, Packageable, PacketPipe};
 
 const MTU: usize = Packet::POSTCARD_MAX_SIZE;
 const REQUEST_PERIOD: Duration = Duration::from_secs(10);
@@ -67,7 +67,7 @@ impl Packet {
 }
 
 impl Packageable for Packet {
-    type Error = postcard::Error;
+    type Error = PackageError;
     const MAX_SIZE: usize = Packet::POSTCARD_MAX_SIZE;
 
     fn package(&self, packet_body: &mut [u8]) -> Result<usize, Self::Error> {
@@ -147,7 +147,7 @@ impl<'a, P: PacketPipe> ClientCore<'a, P> {
     async fn send_packet(&mut self, packet: &Packet, dest: Address) {
         let mut tx_body = [0u8; MTU];
         // Note(unwrap): to_bytes is infallible due to MaxSize.
-        let tx_body = unwrap!(packet.to_bytes(&mut tx_body));
+        let tx_body = unwrap!(packet.to_bytes(&mut tx_body).map_err(|_| PackageError));
 
         let result = self.pipe.send(dest, tx_body).await;
 
@@ -227,8 +227,8 @@ impl<'a, P: PacketPipe> ClientCore<'a, P> {
                 embassy_futures::select::Either::First(tup) => match tup {
                     Ok((header, size)) => match Packet::parse(&rx_body[..size]) {
                         Ok(packet) => self.handle_packet(&header, &packet).await,
-                        Err(e) => {
-                            error!("Got malformed packet: {}", e);
+                        Err(_e) => {
+                            error!("Got malformed packet");
                         }
                     },
                     Err(e) => self.handle(Err(e)),
