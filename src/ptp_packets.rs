@@ -51,7 +51,7 @@ impl Header {
 
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum Error {
+pub enum Error<E> {
     /// Underlying buffer to store packet in is too small.
     BufferTooSmall,
     /// Cobs encoding is malformed.
@@ -61,29 +61,29 @@ pub enum Error {
     /// Checksum of package is incorrect.
     Checksum,
     /// The internal IO mechanism returned an error.
-    Inner,
+    Inner(E),
 }
 
-impl From<DestBufTooSmallError> for Error {
+impl<E> From<DestBufTooSmallError> for Error<E> {
     fn from(_value: DestBufTooSmallError) -> Self {
         Error::BufferTooSmall
     }
 }
 
-impl From<cobs::DecodeError> for Error {
+impl<E> From<cobs::DecodeError> for Error<E> {
     fn from(_value: cobs::DecodeError) -> Self {
         Error::CobsEncoding
     }
 }
 
-impl From<crate::buf::OverflowError> for Error {
+impl<E> From<crate::buf::OverflowError> for Error<E> {
     fn from(_value: crate::buf::OverflowError) -> Self {
         Error::BufferTooSmall
     }
 }
 
 impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
-    async fn send(&mut self, header: Header, data: &[u8]) -> Result<(), Error> {
+    async fn send(&mut self, header: Header, data: &[u8]) -> Result<(), Error<T::Error>> {
         let header = header.to_bytes();
         let mut digest = CRC.digest();
         digest.update(&header);
@@ -109,12 +109,12 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         self.inner
             .write_all(&buf[0..size + 1])
             .await
-            .map_err(|_| Error::Inner)?;
+            .map_err(Error::Inner)?;
 
         Ok(())
     }
 
-    async fn send_empty_nack_request(&mut self) -> Result<(), Error> {
+    async fn send_empty_nack_request(&mut self) -> Result<(), Error<T::Error>> {
         self.send(
             HeaderBuilder::new()
                 .with_ack(false)
@@ -127,7 +127,7 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         .await
     }
 
-    fn decode_frame(source: &mut [u8], destination: &mut [u8]) -> Result<Header, Error> {
+    fn decode_frame(source: &mut [u8], destination: &mut [u8]) -> Result<Header, Error<T::Error>> {
         let size = cobs::decode_in_place(source)?;
         let source = &source[0..size];
 
@@ -163,7 +163,7 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         Ok(rx_header)
     }
 
-    async fn receive(&mut self, data: &mut [u8]) -> Result<Header, Error> {
+    async fn receive(&mut self, data: &mut [u8]) -> Result<Header, Error<T::Error>> {
         let mut scanned_upto = 0usize;
 
         // Pull from underlying interface until we receive at least a full frame.
@@ -194,7 +194,7 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
                 .inner
                 .read(self.rx_buf.free_mut_slice())
                 .await
-                .map_err(|_| Error::Inner)?;
+                .map_err(Error::Inner)?;
 
             trace!("Got {:?}", &self.rx_buf.free_mut_slice()[0..size]);
 
@@ -245,7 +245,7 @@ impl<T: Read + Write, const MTU: usize> Slave<T, MTU> {
 }
 
 impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
-    type Error = Error;
+    type Error = Error<T::Error>;
 
     async fn transfer(
         &mut self,
@@ -299,7 +299,12 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
                 Err(e @ Error::Checksum)
                 | Err(e @ Error::Malformed)
                 | Err(e @ Error::CobsEncoding) => {
+                    // TODO fix this distinction
+                    #[cfg(feature = "defmt")]
+                    error!("Master error {}", defmt::Debug2Format(&e));
+                    #[cfg(not(feature = "defmt"))]
                     error!("Master error {:?}", e);
+
                     // TODO mark statistics
                     continue;
                 }
@@ -310,7 +315,7 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
 }
 
 impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
-    type Error = Error;
+    type Error = Error<T::Error>;
 
     async fn transfer(
         &mut self,
@@ -375,7 +380,13 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                 | Err(e @ Error::CobsEncoding) => {
                     // TODO mark statistics
                     // Send a NACK, request retransmission.
-                    error!("Slave error {:?} ", e);
+
+                    // TODO fix this distinction
+                    #[cfg(feature = "defmt")]
+                    error!("Slave error {}", defmt::Debug2Format(&e));
+                    #[cfg(not(feature = "defmt"))]
+                    error!("Slave error {:?}", e);
+
                     self.inner.send_empty_nack_request().await?;
                     continue;
                 }
