@@ -1,4 +1,4 @@
-use core::ops::Deref;
+use core::{mem::MaybeUninit, ops::Deref};
 
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -78,9 +78,12 @@ impl<P: PacketPipe, H: PacketHandler> Socket<P, H> {
     pub async fn run<const MTU: usize>(&mut self) {
         const { core::assert!(Self::mtu() <= MTU) }
 
-        let mut rx_body = [0u8; MTU];
         loop {
-            match self.pipe.receive(&mut rx_body).await {
+            // Safety: pipe will fill this buffer & the buffer does not implement Drop.
+            let mut rx_body = MaybeUninit::<[u8; MTU]>::uninit();
+            let rx_body = unsafe { rx_body.assume_init_mut() };
+
+            match self.pipe.receive(rx_body).await {
                 Ok((header, size)) => match Packet::parse(&rx_body[..size]) {
                     Ok(packet) => {
                         self.handler
