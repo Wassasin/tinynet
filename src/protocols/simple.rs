@@ -15,6 +15,10 @@ impl<T> Packet<T> {
     pub const fn new(t: T) -> Self {
         Self(t)
     }
+
+    pub fn unpack(self) -> T {
+        self.0
+    }
 }
 
 impl<T: DeserializeOwned> Packet<T> {
