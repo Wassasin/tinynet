@@ -58,12 +58,12 @@ pub trait PacketHandler {
         pipe: &mut P,
         header: Header,
         packet: Packet<Self::Data>,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = ()> + '_;
     fn handle_error<P: PacketPipe>(
         &mut self,
         pipe: &mut P,
         error: P::Error,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = ()> + '_;
 }
 
 impl<P: PacketPipe, H: PacketHandler> Socket<P, H> {
