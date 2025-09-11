@@ -144,12 +144,12 @@ impl<'a, P: PacketPipe> ClientCore<'a, P> {
         }
     }
 
-    async fn send_packet(&mut self, packet: &Packet, dest: Address) {
+    fn send_packet(&mut self, packet: &Packet, dest: Address) {
         let mut tx_body = [0u8; MTU];
         // Note(unwrap): to_bytes is infallible due to MaxSize.
         let tx_body = unwrap!(packet.to_bytes(&mut tx_body).map_err(|_| PackageError));
 
-        let result = self.pipe.send(dest, tx_body).await;
+        let result = self.pipe.send(dest, tx_body);
 
         self.handle(result)
     }
@@ -164,12 +164,10 @@ impl<'a, P: PacketPipe> ClientCore<'a, P> {
                 if hardware_address == self.hardware_address {
                     match self.state() {
                         State::Assigned { .. } => {
-                            let _ = self
-                                .send_packet(
-                                    &Packet::IHave(self.hardware_address.clone()),
-                                    header.src(),
-                                )
-                                .await;
+                            let _ = self.send_packet(
+                                &Packet::IHave(self.hardware_address.clone()),
+                                header.src(),
+                            );
                         }
                         _ => {}
                     }
@@ -193,8 +191,7 @@ impl<'a, P: PacketPipe> ClientCore<'a, P> {
                     info!("Got assigned address {:?}", address);
 
                     let _ = self
-                        .send_packet(&Packet::IHave(self.hardware_address.clone()), header.src())
-                        .await;
+                        .send_packet(&Packet::IHave(self.hardware_address.clone()), header.src());
                 } else {
                     // Ignore
                 }
@@ -239,7 +236,6 @@ impl<'a, P: PacketPipe> ClientCore<'a, P> {
                         &Packet::Request(self.hardware_address.clone()),
                         ADDRESS_MULTICAST,
                     )
-                    .await
                 }
             }
         }

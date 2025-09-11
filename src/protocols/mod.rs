@@ -18,8 +18,8 @@ pub trait PacketPipe {
     /// Must be cancel-safe.
     async fn receive(&mut self, rx_body: &mut [u8]) -> Result<(Header, usize), Self::Error>;
 
-    /// Send a full packet.
-    async fn send(&mut self, dest: Address, tx_packet: &[u8]) -> Result<(), Self::Error>;
+    /// Send a full packet, which will be dropped if there is no buffer space.
+    fn send(&mut self, dest: Address, tx_packet: &[u8]) -> Result<(), Self::Error>;
 }
 
 pub trait Packageable {
