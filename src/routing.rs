@@ -38,7 +38,7 @@ impl TryFrom<u16> for Address {
 
 impl Address {
     const fn try_from(value: u16) -> Result<Self, AddressOutOfRange> {
-        if ADDRESSES_VALID.start().0 >= value && ADDRESSES_VALID.end().0 <= value {
+        if value >= ADDRESSES_VALID.start().0 && value <= ADDRESSES_VALID.end().0 {
             Ok(Address(value))
         } else {
             Err(AddressOutOfRange)
