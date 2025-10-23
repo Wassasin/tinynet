@@ -41,6 +41,10 @@ impl embedded_io_async::Write for MockHalfDuplexSide<'_> {
 
         Ok(result)
     }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(()) // No-op
+    }
 }
 
 impl MockHalfDuplexBus {
