@@ -32,6 +32,26 @@ jobs:
       - name: cargo clippy
         run: cargo clippy -- -F clippy::suspicious -F clippy::correctness -F clippy::perf -F clippy::style
 
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu]
+    name: cargo test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install ${{ matrix.version }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: rustup target add ${{ matrix.target }}
+        run: rustup target add ${{ matrix.target }}
+      - name: cargo test
+        run: cargo test --target ${{ matrix.target }}
+
   check:
     runs-on: ubuntu-latest
     strategy:
