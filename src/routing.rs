@@ -2,7 +2,7 @@
 //!
 //! Does not provide reliability.
 
-use core::ops::BitOrAssign;
+use core::ops::{BitOrAssign, RangeInclusive};
 
 use bitfields::bitfield;
 use postcard::experimental::max_size::MaxSize;
@@ -19,6 +19,7 @@ pub struct Address(u16);
 pub const ADDRESS_MULTICAST: Address = Address(0x000);
 pub const ADDRESS_FIRST: Address = Address(0x001);
 pub const ADDRESS_LAST: Address = Address((NUMBER_OF_ADDRESSES - 1) as u16);
+pub const ADDRESSES_VALID: RangeInclusive<Address> = ADDRESS_MULTICAST..=ADDRESS_LAST;
 
 pub const TTL_UNLIMITED: u8 = 0b0000;
 pub const TTL_DEFAULT: u8 = 0b1000;
@@ -37,7 +38,7 @@ impl TryFrom<u16> for Address {
 
 impl Address {
     const fn try_from(value: u16) -> Result<Self, AddressOutOfRange> {
-        if value >= ADDRESS_MULTICAST.0 && value <= ADDRESS_LAST.0 {
+        if ADDRESSES_VALID.start().0 >= value && ADDRESSES_VALID.end().0 <= value {
             Ok(Address(value))
         } else {
             Err(AddressOutOfRange)
@@ -180,7 +181,7 @@ impl Iterator for PortSetIterator {
                 return None;
             }
 
-            let result = (self.set & 0b1 == 0b1).then(|| PortId(self.index));
+            let result = (self.set & 0b1 == 0b1).then_some(PortId(self.index));
 
             self.set >>= 1;
             self.index += 1;
@@ -197,9 +198,9 @@ pub struct RoutingTable<const TABLE_SIZE: usize> {
 }
 
 impl<const TABLE_SIZE: usize> RoutingTable<TABLE_SIZE> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
-            table: [PortSet::default(); TABLE_SIZE],
+            table: [PortSet::empty(); TABLE_SIZE],
         }
     }
 
@@ -210,5 +211,11 @@ impl<const TABLE_SIZE: usize> RoutingTable<TABLE_SIZE> {
 
     pub fn get_route(&self, address: Address) -> PortSet {
         self.table[address.0 as usize]
+    }
+}
+
+impl<const TABLE_SIZE: usize> Default for RoutingTable<TABLE_SIZE> {
+    fn default() -> Self {
+        Self::new()
     }
 }

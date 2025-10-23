@@ -162,14 +162,11 @@ impl<'a, P: PacketPipe> ClientCore<'a, P> {
             }
             Packet::WhoHas(hardware_address) => {
                 if hardware_address == self.hardware_address {
-                    match self.state() {
-                        State::Assigned { .. } => {
-                            let _ = self.send_packet(
-                                &Packet::IHave(self.hardware_address.clone()),
-                                header.src(),
-                            );
-                        }
-                        _ => {}
+                    if let State::Assigned { .. } = self.state() {
+                        self.send_packet(
+                            &Packet::IHave(self.hardware_address.clone()),
+                            header.src(),
+                        );
                     }
                 } else {
                     // Ignore
@@ -190,8 +187,7 @@ impl<'a, P: PacketPipe> ClientCore<'a, P> {
                     });
                     info!("Got assigned address {:?}", address);
 
-                    let _ = self
-                        .send_packet(&Packet::IHave(self.hardware_address.clone()), header.src());
+                    self.send_packet(&Packet::IHave(self.hardware_address.clone()), header.src());
                 } else {
                     // Ignore
                 }

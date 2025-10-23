@@ -12,7 +12,7 @@ use crate::buf::Buf;
 const CRC_ALG: crc::Algorithm<u16> = crc::CRC_16_USB;
 const CRC: crc::Crc<u16> = crc::Crc::<u16>::new(&CRC_ALG);
 
-const HEADER_LEN: usize = Header::new().to_bytes().len();
+const HEADER_LEN: usize = Header::new().into_bytes().len();
 const CRC_LEN: usize = CRC.checksum(&[0u8; 2]).to_le_bytes().len();
 
 /// Cobs sentinel value put at end of a frame.
@@ -44,7 +44,7 @@ struct Header {
 }
 
 impl Header {
-    pub const fn to_bytes(self) -> [u8; 2] {
+    pub const fn into_bytes(self) -> [u8; 2] {
         self.into_bits().to_le_bytes()
     }
 }
@@ -84,7 +84,7 @@ impl<E> From<crate::buf::OverflowError> for Error<E> {
 
 impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
     async fn send(&mut self, header: Header, data: &[u8]) -> Result<(), Error<T::Error>> {
-        let header = header.to_bytes();
+        let header = header.into_bytes();
         let mut digest = CRC.digest();
         digest.update(&header);
         digest.update(data);
