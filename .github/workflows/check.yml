@@ -12,10 +12,6 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     name: cargo {fmt, clippy}
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [thumbv6m-none-eabi]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,12 +21,24 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt,clippy
-      - name: rustup target add ${{ matrix.target }}
-        run: rustup target add ${{ matrix.target }}
       - name: cargo fmt
         run: cargo fmt --check
       - name: cargo clippy
         run: cargo clippy -- -F clippy::suspicious -F clippy::correctness -F clippy::perf -F clippy::style
+
+  test:
+    runs-on: ubuntu-latest
+    name: cargo test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: cargo test
+        run: cargo test
 
   check:
     runs-on: ubuntu-latest
@@ -58,3 +66,24 @@ jobs:
         run: cargo +${{ matrix.version }} check --target ${{ matrix.target }}
       - name: cargo +${{ matrix.version }} build
         run: cargo +${{ matrix.version }} build --target ${{ matrix.target }}
+
+  check-example-test-application:
+    runs-on: ubuntu-latest
+    name: check test_application example
+    defaults:
+      run:
+        working-directory: examples/test_application
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: cargo fmt
+        run: cargo fmt --check
+      - name: cargo clippy
+        run: cargo clippy -- -F clippy::suspicious -F clippy::correctness -F clippy::perf -F clippy::style
+      - name: cargo check
+        run: cargo check
