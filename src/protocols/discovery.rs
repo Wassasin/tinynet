@@ -202,15 +202,14 @@ impl<'a, P: PacketPipe> ClientCore<'a, P> {
             let deadline_fut = {
                 let state = self.state();
                 async move {
-                    match state {
-                        State::Unassigned => {
-                            if let Some(last_request) = last_request {
-                                Timer::at(last_request + REQUEST_PERIOD).await
-                            } else {
-                                // Immediately return
-                            };
-                        }
-                        State::Assigned { until, .. } => Timer::at(until).await,
+                    // Await until our lease has expired.
+                    if let State::Assigned { until, .. } = state {
+                        Timer::at(until).await;
+                    }
+
+                    // Await until we are allowed to request again.
+                    if let Some(last_request) = last_request {
+                        Timer::at(last_request + REQUEST_PERIOD).await;
                     }
                 }
             };
