@@ -6,7 +6,6 @@ use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     pipe::{Pipe, Reader, Writer},
 };
-use embedded_io_async::{Read, Write};
 use tinynet::ptp_packets::{Master, PacketInterface, Slave};
 
 const PIPE_LENGTH: usize = 256;
