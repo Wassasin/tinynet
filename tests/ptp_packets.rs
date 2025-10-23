@@ -33,6 +33,10 @@ impl embedded_io_async::Write for MockHalfDuplexSide<'_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         Ok(self.tx.write(buf).await)
     }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(()) // No-op
+    }
 }
 
 impl MockHalfDuplexBus {
