@@ -1,4 +1,5 @@
 #![cfg_attr(not(test), no_std)]
+#![doc = include_str!(concat!("../", env!("CARGO_PKG_README")))]
 
 // This mod MUST go first, so that the others see its macros.
 pub(crate) mod fmt;

@@ -2,6 +2,15 @@
 name = "tinynet"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+authors = ["Wouter Geraedts <git@woutergeraedts.nl>"]
+categories = ["embedded", "no-std::no-alloc", "no-std"]
+keywords = ["networking"]
+description = "Stack usage tools for Cortex-M processors"
+
+readme = "README.md"
 
 [dependencies]
 defmt = { version = "1.0", optional = true }
