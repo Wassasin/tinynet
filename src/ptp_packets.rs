@@ -56,11 +56,13 @@ impl Header {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error<E> {
-    /// Underlying buffer to store packet in is too small.
-    BufferTooSmall,
+    /// Underlying buffer to store receiving packet in is too small.
+    RxBufferTooSmall,
+    /// Packet to be sent is bigger than MTU.
+    TxMTUViolation,
     /// Cobs encoding is malformed.
     CobsEncoding,
     /// The header + body + checksum + marker structure is malformed.
@@ -73,7 +75,7 @@ pub enum Error<E> {
 
 impl<E> From<DestBufTooSmallError> for Error<E> {
     fn from(_value: DestBufTooSmallError) -> Self {
-        Error::BufferTooSmall
+        Error::TxMTUViolation
     }
 }
 
@@ -85,7 +87,7 @@ impl<E> From<cobs::DecodeError> for Error<E> {
 
 impl<E> From<crate::buf::OverflowError> for Error<E> {
     fn from(_value: crate::buf::OverflowError) -> Self {
-        Error::BufferTooSmall
+        Error::RxBufferTooSmall
     }
 }
 
@@ -106,15 +108,15 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
             encoder.finalize()
         };
 
-        if size + 1 >= MTU {
-            return Err(Error::BufferTooSmall);
+        if size >= MTU {
+            return Err(Error::TxMTUViolation);
         }
-        buf[size + 1] = MARKER;
+        buf[size] = MARKER;
 
-        debug!("Transceiver sending {:?}", &buf[0..size + 1]);
+        debug!("Transceiver sending {:?}", &buf[0..=size]);
 
         self.inner
-            .write_all(&buf[0..size + 1])
+            .write_all(&buf[0..=size])
             .await
             .map_err(Error::Inner)?;
 
@@ -162,7 +164,7 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         }
 
         if rx_body.len() > destination.len() {
-            return Err(Error::BufferTooSmall);
+            return Err(Error::RxBufferTooSmall);
         }
 
         destination[0..rx_body.len()].copy_from_slice(rx_body);
@@ -175,15 +177,6 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
 
         // Pull from underlying interface until we receive at least a full frame.
         let frame_len = loop {
-            if self.rx_buf.is_full() {
-                // Give up on our current receive buffer, it is full of garbage.
-                // TODO keep statistics
-                warn!("Purged buffer of garbage");
-                self.rx_buf.clear();
-                scanned_upto = 0;
-                continue;
-            }
-
             // To start off, check if we have a full frame already in our rx buffer.
             let marker = self.rx_buf.as_slice()[scanned_upto..]
                 .iter()
@@ -195,7 +188,17 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
                 break scanned_upto + marker_i;
             }
 
+            // We do not have a marker, hence we need to fill the buffer more.
             scanned_upto = self.rx_buf.len();
+
+            if self.rx_buf.is_full() {
+                // Give up on our current receive buffer, it is full of garbage.
+                // TODO keep statistics
+                warn!("Purged buffer of garbage");
+                self.rx_buf.clear();
+                scanned_upto = 0;
+                continue;
+            }
 
             let size = self
                 .inner
@@ -302,6 +305,32 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
                         return Ok(None);
                     }
                 }
+                Err(e @ Error::RxBufferTooSmall) => {
+                    // Slave needs to know if the packet arrived, but our buffer is too small.
+                    // In order to prevent slave from keeping to send the same message, we will ACK it,
+                    // even though receiving it is not possible.
+
+                    // We will then wait for the next possibility to transfer our TX if we have any.
+
+                    // TODO fix this distinction
+                    #[cfg(feature = "defmt")]
+                    error!("Master error {}", defmt::Debug2Format(&e));
+                    #[cfg(not(feature = "defmt"))]
+                    error!("Master error {:?}", e);
+
+                    self.inner
+                        .send(
+                            HeaderBuilder::new()
+                                .with_ack(true)
+                                .with_has_data(false)
+                                .with_allow_data(false)
+                                .build(),
+                            &[],
+                        )
+                        .await?;
+
+                    return Err(e);
+                }
                 // Transmission related issues
                 Err(e @ Error::Checksum)
                 | Err(e @ Error::Malformed)
@@ -380,6 +409,30 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                             return Ok(None);
                         }
                     }
+                }
+                Err(e @ Error::RxBufferTooSmall) => {
+                    // Master needs to know if the packet arrived, but our buffer is too small.
+                    // In order to prevent master from keeping to send the same message, we will ACK it,
+                    // even though receiving it is not possible.
+
+                    // TODO fix this distinction
+                    #[cfg(feature = "defmt")]
+                    error!("Slave error {}", defmt::Debug2Format(&e));
+                    #[cfg(not(feature = "defmt"))]
+                    error!("Slave error {:?}", e);
+
+                    self.inner
+                        .send(
+                            HeaderBuilder::new()
+                                .with_ack(true)
+                                .with_has_data(false)
+                                .with_allow_data(true)
+                                .build(),
+                            &[],
+                        )
+                        .await?;
+
+                    return Err(e);
                 }
                 // Transmission related issues
                 Err(e @ Error::Checksum)

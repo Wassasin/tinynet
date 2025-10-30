@@ -5,7 +5,7 @@ use embassy_sync::{
     pipe::{Pipe, Reader, Writer},
 };
 use embedded_io_async::{Read, Write};
-use tinynet::ptp_packets::{Master, PacketInterface, Slave};
+use tinynet::ptp_packets::{Error, Master, PacketInterface, Slave, compute_mtu};
 
 const PIPE_LENGTH: usize = 128;
 
@@ -149,6 +149,140 @@ fn rx_tx() {
                 let result = slave.transfer(&mut buf, None).await.unwrap();
                 assert!(result.is_none());
             }
+        };
+
+        embassy_futures::join::join(master_fut, slave_fut).await;
+    });
+}
+
+#[test]
+fn mtu() {
+    embassy_futures::block_on(async {
+        const DATA_MTU: usize = 100;
+        const PTP_MTU: usize = compute_mtu(DATA_MTU);
+
+        assert_eq!(PTP_MTU, 106);
+
+        let mut bus = MockHalfDuplexBus::new();
+        let (master, slave) = bus.split();
+
+        let mut master: Master<_, PTP_MTU> = Master::new(master);
+        let mut slave: Slave<_, PTP_MTU> = Slave::new(slave);
+
+        let pkt = &[1; DATA_MTU];
+
+        let master_fut = async {
+            let mut buf = [0u8; DATA_MTU];
+
+            for _ in 0..10 {
+                // Master RX
+                let size = master.transfer(&mut buf, None).await.unwrap().unwrap();
+                assert_eq!(&buf[0..size], pkt);
+            }
+
+            for _ in 0..10 {
+                // Master TX
+                let result = master.transfer(&mut buf, Some(pkt)).await.unwrap();
+                assert!(result.is_none());
+            }
+
+            for _ in 0..10 {
+                // Master TX+RX
+                let size = master.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
+                assert_eq!(&buf[0..size], pkt);
+            }
+
+            for _ in 0..10 {
+                // Master RX empty
+                let result = master.transfer(&mut buf, None).await.unwrap();
+                assert!(result.is_none());
+            }
+        };
+        let slave_fut = async {
+            let mut buf = [0u8; DATA_MTU];
+
+            for _ in 0..10 {
+                // Slave TX
+                let result = slave.transfer(&mut buf, Some(pkt)).await.unwrap();
+                assert!(result.is_none());
+            }
+
+            for _ in 0..10 {
+                // Slave RX
+                let size = slave.transfer(&mut buf, None).await.unwrap().unwrap();
+                assert_eq!(&buf[0..size], pkt);
+            }
+
+            for _ in 0..10 {
+                // Slave TX+RX
+                let size = slave.transfer(&mut buf, Some(pkt)).await.unwrap().unwrap();
+                assert_eq!(&buf[0..size], pkt);
+            }
+
+            for _ in 0..10 {
+                // Slave RX empty
+                let result = slave.transfer(&mut buf, None).await.unwrap();
+                assert!(result.is_none());
+            }
+        };
+
+        embassy_futures::join::join(master_fut, slave_fut).await;
+    });
+}
+
+#[test]
+fn buf_too_small() {
+    embassy_futures::block_on(async {
+        const DATA_MTU: usize = 5;
+        const PTP_MTU: usize = compute_mtu(DATA_MTU);
+
+        assert_eq!(PTP_MTU, 11);
+
+        let mut bus = MockHalfDuplexBus::new();
+        let (master, slave) = bus.split();
+
+        let mut master: Master<_, PTP_MTU> = Master::new(master);
+        let mut slave: Slave<_, PTP_MTU> = Slave::new(slave);
+
+        let pkt_violation = &[0, 1, 2, 3, 4];
+
+        let master_fut = async {
+            let mut buf = [0u8; DATA_MTU - 1]; // Data buffer intentionally too small.
+
+            // Master RX
+            let res = master.transfer(&mut buf, None).await;
+            assert_eq!(res, Err(Error::RxBufferTooSmall));
+
+            // Master TX
+            let res = master.transfer(&mut buf, Some(pkt_violation)).await;
+            assert_eq!(res, Ok(None));
+
+            // Master TX+RX
+            let res = master.transfer(&mut buf, Some(pkt_violation)).await;
+            assert_eq!(res, Ok(None)); // The slave did not have a chance to send their data as they failed during their Rx.
+
+            // Master RX empty
+            let result = master.transfer(&mut buf, None).await.unwrap();
+            assert!(result.is_none());
+        };
+        let slave_fut = async {
+            let mut buf = [0u8; DATA_MTU - 1]; // Data buffer intentionally too small.
+
+            // Slave TX
+            let res = slave.transfer(&mut buf, Some(pkt_violation)).await.unwrap();
+            assert!(res.is_none());
+
+            // Slave RX
+            let res = slave.transfer(&mut buf, None).await;
+            assert_eq!(res, Err(Error::RxBufferTooSmall));
+
+            // Slave TX+RX
+            let res = slave.transfer(&mut buf, Some(pkt_violation)).await;
+            assert_eq!(res, Err(Error::RxBufferTooSmall));
+
+            // Slave RX empty
+            let result = slave.transfer(&mut buf, None).await.unwrap();
+            assert!(result.is_none());
         };
 
         embassy_futures::join::join(master_fut, slave_fut).await;
