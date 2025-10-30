@@ -18,6 +18,13 @@ const CRC_LEN: usize = CRC.checksum(&[0u8; 2]).to_le_bytes().len();
 /// Cobs sentinel value put at end of a frame.
 const MARKER: u8 = 0x00;
 
+/// Computes given some data MTU, what the appropriate ptp_packets MTU should be for the physical layer.
+pub const fn compute_mtu(data_mtu: usize) -> usize {
+    let cobs_len = core::mem::size_of::<Header>() + data_mtu + CRC_LEN;
+    let output_len = cobs::max_encoding_length(cobs_len);
+    output_len + core::mem::size_of_val(&MARKER)
+}
+
 struct Transceiver<T: Read + Write, const MTU: usize> {
     rx_buf: Buf<MTU>,
     inner: T,
