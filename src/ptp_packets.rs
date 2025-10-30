@@ -59,8 +59,10 @@ impl Header {
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error<E> {
-    /// Underlying buffer to store packet in is too small.
-    BufferTooSmall,
+    /// Underlying buffer to store receiving packet in is too small.
+    RxBufferTooSmall,
+    /// Packet to be sent is bigger than MTU.
+    TxMTUViolation,
     /// Cobs encoding is malformed.
     CobsEncoding,
     /// The header + body + checksum + marker structure is malformed.
@@ -73,7 +75,7 @@ pub enum Error<E> {
 
 impl<E> From<DestBufTooSmallError> for Error<E> {
     fn from(_value: DestBufTooSmallError) -> Self {
-        Error::BufferTooSmall
+        Error::TxMTUViolation
     }
 }
 
@@ -85,7 +87,7 @@ impl<E> From<cobs::DecodeError> for Error<E> {
 
 impl<E> From<crate::buf::OverflowError> for Error<E> {
     fn from(_value: crate::buf::OverflowError) -> Self {
-        Error::BufferTooSmall
+        Error::RxBufferTooSmall
     }
 }
 
@@ -106,15 +108,15 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
             encoder.finalize()
         };
 
-        if size + 1 >= MTU {
-            return Err(Error::BufferTooSmall);
+        if size > MTU {
+            return Err(Error::TxMTUViolation);
         }
-        buf[size + 1] = MARKER;
+        buf[size] = MARKER;
 
-        debug!("Transceiver sending {:?}", &buf[0..size + 1]);
+        debug!("Transceiver sending {:?}", &buf[0..=size]);
 
         self.inner
-            .write_all(&buf[0..size + 1])
+            .write_all(&buf[0..=size])
             .await
             .map_err(Error::Inner)?;
 
@@ -162,7 +164,7 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
         }
 
         if rx_body.len() > destination.len() {
-            return Err(Error::BufferTooSmall);
+            return Err(Error::RxBufferTooSmall);
         }
 
         destination[0..rx_body.len()].copy_from_slice(rx_body);
@@ -175,15 +177,6 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
 
         // Pull from underlying interface until we receive at least a full frame.
         let frame_len = loop {
-            if self.rx_buf.is_full() {
-                // Give up on our current receive buffer, it is full of garbage.
-                // TODO keep statistics
-                warn!("Purged buffer of garbage");
-                self.rx_buf.clear();
-                scanned_upto = 0;
-                continue;
-            }
-
             // To start off, check if we have a full frame already in our rx buffer.
             let marker = self.rx_buf.as_slice()[scanned_upto..]
                 .iter()
@@ -195,7 +188,17 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
                 break scanned_upto + marker_i;
             }
 
+            // We do not have a marker, hence we need to fill the buffer more.
             scanned_upto = self.rx_buf.len();
+
+            if self.rx_buf.is_full() {
+                // Give up on our current receive buffer, it is full of garbage.
+                // TODO keep statistics
+                warn!("Purged buffer of garbage");
+                self.rx_buf.clear();
+                scanned_upto = 0;
+                continue;
+            }
 
             let size = self
                 .inner

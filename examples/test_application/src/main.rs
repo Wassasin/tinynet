@@ -77,16 +77,19 @@ impl MockHalfDuplexBus {
 async fn main() {
     pretty_env_logger::init();
 
+    const DATA_MTU: usize = 4;
+    const PTP_MTU: usize = tinynet::ptp_packets::compute_mtu(DATA_MTU);
+
     let mut bus = MockHalfDuplexBus::new();
     let (master, slave) = bus.split();
 
-    let mut master: Master<_, 256> = Master::new(master);
-    let mut slave: Slave<_, 256> = Slave::new(slave);
+    let mut master: Master<_, PTP_MTU> = Master::new(master);
+    let mut slave: Slave<_, PTP_MTU> = Slave::new(slave);
 
     let pkt = &[1, 2, 3, 4];
 
     let master_fut = async {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; DATA_MTU];
 
         // Master RX
         let size = master.transfer(&mut buf, None).await.unwrap().unwrap();
@@ -108,7 +111,7 @@ async fn main() {
         }
     };
     let slave_fut = async {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; DATA_MTU];
 
         // Slave TX
         let result = slave.transfer(&mut buf, Some(pkt)).await.unwrap();
