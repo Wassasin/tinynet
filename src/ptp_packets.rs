@@ -56,7 +56,7 @@ impl Header {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error<E> {
     /// Underlying buffer to store receiving packet in is too small.
@@ -108,7 +108,7 @@ impl<T: Read + Write, const MTU: usize> Transceiver<T, MTU> {
             encoder.finalize()
         };
 
-        if size > MTU {
+        if size >= MTU {
             return Err(Error::TxMTUViolation);
         }
         buf[size] = MARKER;
@@ -305,6 +305,32 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Master<T, MTU> {
                         return Ok(None);
                     }
                 }
+                Err(e @ Error::RxBufferTooSmall) => {
+                    // Slave needs to know if the packet arrived, but our buffer is too small.
+                    // In order to prevent slave from keeping to send the same message, we will ACK it,
+                    // even though receiving it is not possible.
+
+                    // We will then wait for the next possibility to transfer our TX if we have any.
+
+                    // TODO fix this distinction
+                    #[cfg(feature = "defmt")]
+                    error!("Master error {}", defmt::Debug2Format(&e));
+                    #[cfg(not(feature = "defmt"))]
+                    error!("Master error {:?}", e);
+
+                    self.inner
+                        .send(
+                            HeaderBuilder::new()
+                                .with_ack(true)
+                                .with_has_data(false)
+                                .with_allow_data(false)
+                                .build(),
+                            &[],
+                        )
+                        .await?;
+
+                    return Err(e);
+                }
                 // Transmission related issues
                 Err(e @ Error::Checksum)
                 | Err(e @ Error::Malformed)
@@ -383,6 +409,30 @@ impl<T: Read + Write, const MTU: usize> PacketInterface for Slave<T, MTU> {
                             return Ok(None);
                         }
                     }
+                }
+                Err(e @ Error::RxBufferTooSmall) => {
+                    // Master needs to know if the packet arrived, but our buffer is too small.
+                    // In order to prevent master from keeping to send the same message, we will ACK it,
+                    // even though receiving it is not possible.
+
+                    // TODO fix this distinction
+                    #[cfg(feature = "defmt")]
+                    error!("Slave error {}", defmt::Debug2Format(&e));
+                    #[cfg(not(feature = "defmt"))]
+                    error!("Slave error {:?}", e);
+
+                    self.inner
+                        .send(
+                            HeaderBuilder::new()
+                                .with_ack(true)
+                                .with_has_data(false)
+                                .with_allow_data(true)
+                                .build(),
+                            &[],
+                        )
+                        .await?;
+
+                    return Err(e);
                 }
                 // Transmission related issues
                 Err(e @ Error::Checksum)
